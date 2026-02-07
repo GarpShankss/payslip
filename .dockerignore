@@ -1,0 +1,5 @@
+nginx/certbot/
+.nginx/
+__pycache__/
+*.log
+payslips/
