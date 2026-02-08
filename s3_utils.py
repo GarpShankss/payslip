@@ -16,21 +16,26 @@ s3 = boto3.client(
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
 )
 
-def upload_to_s3(local_path, s3_key=None):
-    """Upload file to S3"""
+def upload_to_s3(local_path, s3_key=None, month=None):
+    """Upload file to S3 with optional month folder"""
     if s3_key is None:
         s3_key = os.path.basename(local_path)
-    s3.upload_file(local_path, S3_BUCKET, s3_key, ExtraArgs={"ContentType": "application/pdf"})
-    return s3_key
+
+        if month:
+            s3_key = f"{month}/{s3_key}"
+
+            s3.upload_file(local_path, S3_BUCKET, s3_key, ExtraArgs={"ContentType": "application/pdf"})
+            return s3_key
 
 def download_from_s3(s3_key, local_path):
     """Download file from S3"""
     s3.download_file(S3_BUCKET, s3_key, local_path)
     return local_path
 
-def list_s3_pdfs():
-    """List all PDF files in S3 bucket"""
-    response = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix="")
+def list_s3_pdfs(month=None):
+    """List all PDF files in S3 bucket, optionally filtered by month folder"""
+    prefix = f"{month}/" if month else ""
+    response = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
     if 'Contents' not in response:
         return []
     return [obj['Key'] for obj in response['Contents'] if obj['Key'].endswith('.pdf')]

@@ -3,7 +3,6 @@ import subprocess
 from datetime import datetime
 import zipfile
 import traceback
-import time
 import base64
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -18,16 +17,14 @@ from jinja2 import Environment, FileSystemLoader
 from flask import Flask, request, jsonify, send_file, render_template
 from s3_utils import upload_to_s3, list_s3_pdfs, download_s3_file_to_memory
 
-# Load environment variables
 load_dotenv()
-
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "payslips")
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
-LOGO_PATH = os.path.join(BASE_DIR, "logo.png")  # Put your logo.png in the root folder
+LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -40,7 +37,6 @@ COMPANY = {
     "city": "Bengaluru-100"
 }
 
-# Email configuration from .env
 EMAIL_CONFIG = {
     "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
     "smtp_port": int(os.getenv("SMTP_PORT", "587")),
@@ -48,8 +44,9 @@ EMAIL_CONFIG = {
     "password": os.getenv("EMAIL_PASSWORD", ""),
 }
 
+current_session_pdfs = []
+
 def get_logo_base64():
-    """Convert logo to base64 for embedding in HTML"""
     try:
         if os.path.exists(LOGO_PATH):
             with open(LOGO_PATH, "rb") as img_file:
@@ -59,54 +56,37 @@ def get_logo_base64():
         return None
 
 def send_email(to_email, emp_name, pdf_path, month):
-    """Send payslip email using Zoho SMTP"""
     try:
         print(f"  Preparing email for {to_email}...")
-
         if not EMAIL_CONFIG["sender_email"] or not EMAIL_CONFIG["password"]:
-            print("  ERROR: Email credentials not configured in .env file")
+            print("  ERROR: Email credentials not configured")
             return False
 
-        # Create message
         msg = MIMEMultipart()
         msg['From'] = EMAIL_CONFIG["sender_email"]
         msg['To'] = to_email
         msg['Subject'] = f"Payslip for {month} - {COMPANY['name']}"
-
-        # Email body
         body = f"""Dear {emp_name},
 
-        Please find attached your payslip for the month of {month}.
+Please find attached your payslip for the month of {month}.
 
-        If you have any questions regarding your payslip, please contact HR.
-
-        Best regards,
-        {COMPANY['name']}
-        HR Department
-
-        ---
-        This is an automated email. Please do not reply to this message.
-        """
-
+Best regards,
+{COMPANY['name']}
+HR Department"""
         msg.attach(MIMEText(body, 'plain'))
 
-        # Attach PDF
         with open(pdf_path, 'rb') as file:
             pdf_attachment = MIMEApplication(file.read(), _subtype='pdf')
-            pdf_attachment.add_header('Content-Disposition', 'attachment',
-                                    filename=f'Payslip_{month}_{emp_name.replace(" ", "_")}.pdf')
+            pdf_attachment.add_header('Content-Disposition', 'attachment', filename=f'Payslip_{month}_{emp_name.replace(" ", "_")}.pdf')
             msg.attach(pdf_attachment)
 
-        # Send email
         server = smtplib.SMTP(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"])
         server.starttls()
         server.login(EMAIL_CONFIG["sender_email"], EMAIL_CONFIG["password"])
         server.send_message(msg)
         server.quit()
-
-        print(f"  ✓ Email sent successfully to {to_email}")
+        print(f"  ✓ Email sent to {to_email}")
         return True
-
     except Exception as e:
         print(f"  ✗ Email failed for {to_email}: {str(e)}")
         return False
@@ -122,7 +102,6 @@ def number_to_words(num):
         num = int(float(num))
     except:
         return "Zero rupees only"
-
     if num == 0:
         return "Zero rupees only"
 
@@ -145,15 +124,12 @@ def number_to_words(num):
     if num < 1000:
         result = convert_below_thousand(num)
     elif num < 100000:
-        thousands = num // 1000
-        remainder = num % 1000
-        result = convert_below_thousand(thousands) + " Thousand"
-        if remainder > 0:
-            result += " " + convert_below_thousand(remainder)
+        result = convert_below_thousand(num // 1000) + " Thousand"
+        if num % 1000 > 0:
+            result += " " + convert_below_thousand(num % 1000)
     elif num < 10000000:
-        lakhs = num // 100000
+        result = convert_below_thousand(num // 100000) + " Lakh"
         remainder = num % 100000
-        result = convert_below_thousand(lakhs) + " Lakh"
         if remainder >= 1000:
             result += " " + convert_below_thousand(remainder // 1000) + " Thousand"
             if remainder % 1000 > 0:
@@ -161,9 +137,8 @@ def number_to_words(num):
         elif remainder > 0:
             result += " " + convert_below_thousand(remainder)
     else:
-        crores = num // 10000000
+        result = convert_below_thousand(num // 10000000) + " Crore"
         remainder = num % 10000000
-        result = convert_below_thousand(crores) + " Crore"
         if remainder >= 100000:
             result += " " + convert_below_thousand(remainder // 100000) + " Lakh"
             remainder = remainder % 100000
@@ -173,7 +148,6 @@ def number_to_words(num):
                 result += " " + convert_below_thousand(remainder % 1000)
         elif remainder > 0:
             result += " " + convert_below_thousand(remainder)
-
     return result.strip() + " rupees only"
 
 @app.route("/")
@@ -182,6 +156,9 @@ def dashboard():
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
+    global current_session_pdfs
+    current_session_pdfs = []
+    
     try:
         print("\n" + "="*80)
         print("STARTING PAYSLIP GENERATION")
@@ -192,15 +169,11 @@ def upload_file():
 
         file = request.files["csv_file"]
         month = request.form.get("month", "NA")
-
         filename = secure_filename(file.filename)
         file_path = os.path.join(UPLOAD_DIR, filename)
         file.save(file_path)
 
-        print(f"File saved: {file_path}")
-
         ext = os.path.splitext(file_path)[1].lower()
-
         if ext == ".csv":
             try:
                 df = pd.read_csv(file_path, encoding="utf-8", engine="python")
@@ -212,13 +185,8 @@ def upload_file():
             return jsonify({"error": "Unsupported file type"}), 400
 
         df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-
-        print(f"\nTotal records in file: {len(df)}")
-
         env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
         template = env.get_template("payslip.html")
-
-        # Get logo as base64
         logo_base64 = get_logo_base64()
 
         preview = []
@@ -227,13 +195,10 @@ def upload_file():
 
         for index, row in df.iterrows():
             try:
-                print(f"\n--- Processing Employee {index + 1}/{len(df)} ---")
-
                 emp_id = str(row.get("EMP_ID", f"EMP{index+1}")).strip()
-                pay_month = str(row.get("Month", month)).strip()
+                pay_month = month
+                print(f"DEBUG: Storing to S3 with month folder: {pay_month}")
 
-                print(f"EMP_ID: {emp_id}")
-                print(f"Name: {row.get('Name', 'N/A')}")
 
                 salary_fixed = {
                     "basic": get_numeric_value(row.get("Fixed_Basic")),
@@ -282,131 +247,70 @@ def upload_file():
                     "actual_days": str(row.get("Actual_Days", "31")).strip(),
                 }
 
-                print("Rendering HTML template...")
-
                 html_content = template.render(
-                    company=COMPANY,
-                    emp=emp_data,
-                    salary_fixed=salary_fixed,
-                    salary_earned=salary_earned,
-                    deduction=deduction,
-                    net_pay=net_pay,
-                    net_pay_words=net_pay_words,
-                    month=pay_month,
-                    generated_on=datetime.now().strftime("%d %b %Y"),
-                    logo_base64=logo_base64
+                    company=COMPANY, emp=emp_data, salary_fixed=salary_fixed,
+                    salary_earned=salary_earned, deduction=deduction, net_pay=net_pay,
+                    net_pay_words=net_pay_words, month=pay_month,
+                    generated_on=datetime.now().strftime("%d %b %Y"), logo_base64=logo_base64
                 )
 
                 html_path = os.path.join(OUTPUT_DIR, f"{emp_id}.html")
                 pdf_path = os.path.join(OUTPUT_DIR, f"{emp_id}.pdf")
 
-                print(f"Writing HTML to: {html_path}")
-
                 with open(html_path, "w", encoding="utf-8") as f:
                     f.write(html_content)
 
                 if not os.path.exists(WKHTMLTOPDF_CMD):
-                    error_msg = f"wkhtmltopdf not found at {WKHTMLTOPDF_CMD}"
-                    print(f"ERROR: {error_msg}")
-                    return jsonify({"error": error_msg}), 500
+                    return jsonify({"error": f"wkhtmltopdf not found at {WKHTMLTOPDF_CMD}"}), 500
 
-                print(f"Converting to PDF: {pdf_path}")
+                result = subprocess.run([WKHTMLTOPDF_CMD, "--enable-local-file-access", "--page-size", "A4",
+                    "--margin-top", "10mm", "--margin-bottom", "10mm", "--margin-left", "10mm",
+                    "--margin-right", "10mm", html_path, pdf_path], capture_output=True, text=True, timeout=30)
 
-                result = subprocess.run(
-                    [
-                        WKHTMLTOPDF_CMD,
-                        "--enable-local-file-access",
-                        "--page-size", "A4",
-                        "--margin-top", "10mm",
-                        "--margin-bottom", "10mm",
-                        "--margin-left", "10mm",
-                        "--margin-right", "10mm",
-                        html_path,
-                        pdf_path
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-
-                if result.returncode != 0:
-                    print(f"PDF generation FAILED for {emp_id}")
-                    print(f"Error output: {result.stderr}")
+                if result.returncode != 0 or not os.path.exists(pdf_path):
                     error_count += 1
                     continue
 
-                if not os.path.exists(pdf_path):
-                    print(f"PDF file not found after generation: {pdf_path}")
-                    error_count += 1
-                    continue
-
-                file_size = os.path.getsize(pdf_path)
-                print(f"SUCCESS: PDF generated ({file_size} bytes)")
-
-                # Upload to S3
                 try:
-                    s3_key = upload_to_s3(pdf_path)
-                    print(f"Uploaded to S3: {s3_key}")
+                    print(f"DEBUG: Storing to S3 with month folder: {pay_month}")
+                    s3_key = upload_to_s3(pdf_path, month=pay_month)
+                    print(f"DEBUG: S3 key created: {s3_key}")
+                    current_session_pdfs.append(s3_key)
                 except Exception as s3_error:
                     print(f"S3 upload failed: {s3_error}")
 
-                preview.append({
-                    "EMP_ID": emp_id,
-                    "Name": emp_data["name"],
-                    "Designation": emp_data["designation"],
-                    "Email": emp_data["email"],
-                    "Net_Pay": net_pay,
-                    "PDF_Path": pdf_path
-                })
-
+                preview.append({"EMP_ID": emp_id, "Name": emp_data["name"], "Designation": emp_data["designation"],
+                    "Email": emp_data["email"], "Net_Pay": net_pay, "PDF_Path": pdf_path})
                 success_count += 1
 
             except subprocess.TimeoutExpired:
-                print(f"TIMEOUT: PDF generation took too long for employee {index + 1}")
                 error_count += 1
                 continue
             except Exception as emp_error:
-                print(f"ERROR processing employee {index + 1}: {str(emp_error)}")
-                print(traceback.format_exc())
+                print(f"ERROR: {str(emp_error)}")
                 error_count += 1
                 continue
 
-        print("\n" + "="*80)
-        print(f"GENERATION COMPLETE")
-        print(f"Success: {success_count}/{len(df)}")
-        print(f"Errors: {error_count}/{len(df)}")
-        print("="*80 + "\n")
+        print(f"\nGENERATION COMPLETE - Success: {success_count}/{len(df)}, Errors: {error_count}/{len(df)}\n")
 
         if success_count == 0:
-            return jsonify({"error": "No payslips were generated successfully"}), 500
+            return jsonify({"error": "No payslips generated"}), 500
 
-        return jsonify({
-            "message": f"Generated {success_count} payslip(s) successfully",
-            "preview": preview
-        })
+        return jsonify({"message": f"Generated {success_count} payslip(s)", "preview": preview})
 
     except Exception as e:
-        error_trace = traceback.format_exc()
-        print("\n" + "="*80)
-        print("FATAL ERROR OCCURRED:")
-        print(error_trace)
-        print("="*80 + "\n")
-        return jsonify({"error": str(e), "details": error_trace}), 500
+        print(f"\nFATAL ERROR: {traceback.format_exc()}\n")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/send-emails", methods=["POST"])
 def send_emails():
-    """Send payslips via email to all employees"""
     try:
-        print("\n" + "="*80)
-        print("SENDING EMAILS")
-        print("="*80)
-
         data = request.get_json()
         employees = data.get("employees", [])
         month = data.get("month", "")
 
         if not employees:
-            return jsonify({"error": "No employee data provided"}), 400
+            return jsonify({"error": "No employee data"}), 400
 
         sent_count = 0
         failed_count = 0
@@ -419,21 +323,18 @@ def send_emails():
             pdf_path = emp.get("PDF_Path")
 
             if not emp_email or not pdf_path:
-                print(f"Skipping {emp_id}: Missing email or PDF path")
                 failed_count += 1
-                results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "Missing email or PDF"})
+                results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "Missing data"})
                 continue
 
             if not os.path.exists(pdf_path):
                 pdf_path = os.path.join(OUTPUT_DIR, f"{emp_id}.pdf")
                 if not os.path.exists(pdf_path):
-                    print(f"Skipping {emp_id}: PDF not found")
                     failed_count += 1
                     results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "PDF not found"})
                     continue
 
             success = send_email(emp_email, emp_name, pdf_path, month)
-
             if success:
                 sent_count += 1
                 results.append({"EMP_ID": emp_id, "Status": "Sent", "Email": emp_email})
@@ -441,70 +342,54 @@ def send_emails():
                 failed_count += 1
                 results.append({"EMP_ID": emp_id, "Status": "Failed", "Email": emp_email})
 
-        print("\n" + "="*80)
-        print(f"EMAIL SENDING COMPLETE")
-        print(f"Sent: {sent_count}/{len(employees)}")
-        print(f"Failed: {failed_count}/{len(employees)}")
-        print("="*80 + "\n")
-
-        return jsonify({
-            "message": f"Sent {sent_count} email(s), {failed_count} failed",
-            "sent_count": sent_count,
-            "failed_count": failed_count,
-            "results": results
-        })
+        return jsonify({"message": f"Sent {sent_count}, failed {failed_count}", "sent_count": sent_count,
+            "failed_count": failed_count, "results": results})
 
     except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"\nEMAIL ERROR:\n{error_trace}\n")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/download-current", methods=["GET"])
+def download_current_session():
+    try:
+        if not current_session_pdfs:
+            return jsonify({"error": "No PDFs in current session"}), 404
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for s3_key in current_session_pdfs:
+                pdf_data = download_s3_file_to_memory(s3_key)
+                zipf.writestr(os.path.basename(s3_key), pdf_data.read())
+
+        zip_buffer.seek(0)
+        return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='current_payslips.zip')
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/download", methods=["GET"])
 def download_pdfs():
     try:
-        print("\n" + "="*80)
-        print("DOWNLOADING FROM S3 AND CREATING ZIP")
-        print("="*80)
-
-        # List all PDFs in S3
-        s3_pdf_keys = list_s3_pdfs()
-        print(f"Found {len(s3_pdf_keys)} PDF files in S3")
-
+        month = request.args.get("month")
+        print(f"DEBUG: Searching S3 for month: {month}")
+        s3_pdf_keys = list_s3_pdfs(month=month)
+        print(f"DEBUG: Found keys: {s3_pdf_keys}")
+        
         if not s3_pdf_keys:
-            return jsonify({"error": "No PDF files found in S3"}), 404
+            return jsonify({"error": "No PDF files found"}), 404
 
-        # Create zip in memory
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
             for s3_key in s3_pdf_keys:
-                print(f"  Downloading from S3: {s3_key}")
                 pdf_data = download_s3_file_to_memory(s3_key)
-                zipf.writestr(s3_key, pdf_data.read())
+                zipf.writestr(os.path.basename(s3_key), pdf_data.read())
 
         zip_buffer.seek(0)
-        print(f"\nZIP created successfully in memory")
-        print(f"ZIP size: {len(zip_buffer.getvalue())} bytes")
-        print("="*80 + "\n")
-
-        return send_file(
-            zip_buffer,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name='payslips.zip'
-        )
-
+        return send_file(zip_buffer, mimetype='application/zip', as_attachment=True,
+            download_name=f'payslips_{month}.zip' if month else 'payslips.zip')
     except Exception as e:
-        error_msg = traceback.format_exc()
-        print(f"\nZIP ERROR:\n{error_msg}\n")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     print("\n" + "="*80)
-    print("PAYSLIP GENERATOR SERVER STARTING")
-    print(f"Output directory: {OUTPUT_DIR}")
-    print(f"Template directory: {TEMPLATE_DIR}")
-    print(f"wkhtmltopdf path: {WKHTMLTOPDF_CMD}")
-    print(f"Logo path: {LOGO_PATH}")
-    print(f"Email configured: {bool(EMAIL_CONFIG['sender_email'] and EMAIL_CONFIG['password'])}")
+    print("PAYSLIP GENERATOR STARTING")
     print("="*80 + "\n")
     app.run(debug=True)
