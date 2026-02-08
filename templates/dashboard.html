@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payslip Generator  Admin Dashboard</title>
+    <title>Payslip Generator Admin Dashboard</title>
 
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -164,8 +164,8 @@
             <div class="button-grid">
                 <button class="btn-primary" onclick="uploadCSV()">🚀 Generate Payslips</button>
                 <button id="emailBtn" class="btn-success" disabled onclick="sendEmails()">📧 Send Emails</button>
-                <button class="btn-warning" disabled>💬 Send WhatsApp</button>
-                <button class="btn-info" onclick="downloadZip()">📥 Download PDFs</button>
+                <button class="btn-info" id="downloadCurrentBtn" disabled onclick="downloadCurrent()">📥 Download Current</button>
+                <button class="btn-warning" onclick="downloadByMonth()">📦 Download by Month</button>
             </div>
         </div>
 
@@ -219,6 +219,15 @@ function showStatus(msg, type) {
     s.textContent = msg;
 }
 
+function downloadCurrent() {
+    window.location.href = '/download-current';
+}
+
+function downloadByMonth() {
+    const month = document.getElementById('month').value;
+    window.location.href = `/download?month=${month}`;
+}
+
 function uploadCSV() {
     if (!selectedFile) {
         showStatus('Please select a file', 'error');
@@ -242,6 +251,8 @@ function uploadCSV() {
             }
 
             showStatus(data.message || 'Payslips generated successfully', 'success');
+            
+            document.getElementById('downloadCurrentBtn').disabled = false;
 
             const preview = Array.isArray(data.preview) ? data.preview : [];
             generatedEmployees = preview;
@@ -250,7 +261,6 @@ function uploadCSV() {
             document.getElementById('statGenerated').textContent = preview.length;
             document.getElementById('statsSection').style.display = 'grid';
 
-            // Enable email button
             if (preview.length > 0) {
                 document.getElementById('emailBtn').disabled = false;
             }
@@ -314,7 +324,6 @@ function sendEmails() {
 
         showStatus(data.message, 'success');
         
-        // Update table with email status
         if (data.results) {
             const tbody = document.getElementById('previewTable').querySelector('tbody');
             const rows = tbody.querySelectorAll('tr');
@@ -339,10 +348,6 @@ function sendEmails() {
         showStatus('Email sending failed: ' + err.message, 'error');
         document.getElementById('emailBtn').disabled = false;
     });
-}
-
-function downloadZip() {
-    window.location.href = '/download';
 }
 </script>
 
