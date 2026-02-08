@@ -10,11 +10,13 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from dotenv import load_dotenv
+import io
 
 import pandas as pd
 from werkzeug.utils import secure_filename
 from jinja2 import Environment, FileSystemLoader
 from flask import Flask, request, jsonify, send_file, render_template
+from s3_utils import upload_to_s3, list_s3_pdfs, download_s3_file_to_memory
 
 # Load environment variables
 load_dotenv()
@@ -341,6 +343,13 @@ def upload_file():
                 file_size = os.path.getsize(pdf_path)
                 print(f"SUCCESS: PDF generated ({file_size} bytes)")
 
+                # Upload to S3
+                try:
+                    s3_key = upload_to_s3(pdf_path)
+                    print(f"Uploaded to S3: {s3_key}")
+                except Exception as s3_error:
+                    print(f"S3 upload failed: {s3_error}")
+
                 preview.append({
                     "EMP_ID": emp_id,
                     "Name": emp_data["name"],
@@ -454,37 +463,35 @@ def send_emails():
 def download_pdfs():
     try:
         print("\n" + "="*80)
-        print("CREATING ZIP FILE")
+        print("DOWNLOADING FROM S3 AND CREATING ZIP")
         print("="*80)
 
-        zip_path = os.path.join(BASE_DIR, "payslips.zip")
+        # List all PDFs in S3
+        s3_pdf_keys = list_s3_pdfs()
+        print(f"Found {len(s3_pdf_keys)} PDF files in S3")
 
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
-            print("Removed old ZIP file")
+        if not s3_pdf_keys:
+            return jsonify({"error": "No PDF files found in S3"}), 404
 
-        pdf_files = [f for f in os.listdir(OUTPUT_DIR) if f.endswith(".pdf")]
+        # Create zip in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for s3_key in s3_pdf_keys:
+                print(f"  Downloading from S3: {s3_key}")
+                pdf_data = download_s3_file_to_memory(s3_key)
+                zipf.writestr(s3_key, pdf_data.read())
 
-        print(f"Found {len(pdf_files)} PDF files to zip")
-
-        if not pdf_files:
-            return jsonify({"error": "No PDF files found to download"}), 404
-
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for pdf_file in pdf_files:
-                pdf_full_path = os.path.join(OUTPUT_DIR, pdf_file)
-                file_size = os.path.getsize(pdf_full_path)
-                print(f"  Adding: {pdf_file} ({file_size} bytes)")
-                zipf.write(pdf_full_path, arcname=pdf_file)
-
-        zip_size = os.path.getsize(zip_path)
-        print(f"\nZIP created successfully: {zip_path}")
-        print(f"ZIP size: {zip_size} bytes")
+        zip_buffer.seek(0)
+        print(f"\nZIP created successfully in memory")
+        print(f"ZIP size: {len(zip_buffer.getvalue())} bytes")
         print("="*80 + "\n")
 
-        time.sleep(0.1)
-
-        return send_file(zip_path, mimetype='application/zip', as_attachment=True, download_name='payslips.zip')
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name='payslips.zip'
+        )
 
     except Exception as e:
         error_msg = traceback.format_exc()
