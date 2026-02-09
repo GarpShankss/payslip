@@ -29,7 +29,11 @@ LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-WKHTMLTOPDF_CMD = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+# Detect wkhtmltopdf path (Docker vs Windows)
+if os.path.exists('/usr/bin/wkhtmltopdf'):
+    WKHTMLTOPDF_CMD = '/usr/bin/wkhtmltopdf'
+else:
+    WKHTMLTOPDF_CMD = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
 
 COMPANY = {
     "name": "RS MAN-TECH",
