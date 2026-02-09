@@ -1,1 +1,21 @@
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
 .env
+
+# VS Code
+.vscode/
+
+# Generated files
+payslips/
+uploads/
+
+# OS
+.DS_Store
+Thumbs.db
