@@ -2,10 +2,22 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install wkhtmltopdf and dependencies
+# Install dependencies and wkhtmltopdf
 RUN apt-get update && apt-get install -y \
-    wkhtmltopdf \
-    xvfb \
+    wget \
+    fontconfig \
+    libfreetype6 \
+    libjpeg62-turbo \
+    libpng16-16 \
+    libx11-6 \
+    libxcb1 \
+    libxext6 \
+    libxrender1 \
+    xfonts-75dpi \
+    xfonts-base \
+    && wget https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
+    && apt-get install -y ./wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
+    && rm wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
