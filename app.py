@@ -187,11 +187,55 @@ def upload_file():
             except UnicodeDecodeError:
                 df = pd.read_csv(file_path, encoding="latin1", engine="python")
         elif ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(file_path)
+            # Find the correct header row by looking for EMP_ID or NAME column
+            header_row = None
+            for row_num in range(10):  # Check first 10 rows
+                try:
+                    test_df = pd.read_excel(file_path, header=row_num, nrows=1)
+                    cols_lower = [str(c).lower() for c in test_df.columns]
+                    if any('emp' in c or 'name' in c or 'id' in c for c in cols_lower if not c.startswith('unnamed')):
+                        header_row = row_num
+                        print(f"Found header row at: {row_num}")
+                        break
+                except:
+                    continue
+            
+            if header_row is not None:
+                df = pd.read_excel(file_path, header=header_row)
+                
+                # Handle multi-row headers by merging with next row if needed
+                # Check if next row has additional column names
+                try:
+                    next_row_df = pd.read_excel(file_path, header=header_row+1, nrows=1)
+                    next_cols = [str(c).lower() for c in next_row_df.columns]
+                    # If next row has salary columns, merge the headers
+                    if any('fixed' in c or 'earned' in c or 'deduction' in c for c in next_cols if not c.startswith('unnamed')):
+                        print(f"Detected multi-row headers, merging row {header_row} and {header_row+1}")
+                        # Read both rows as headers
+                        df = pd.read_excel(file_path, header=[header_row, header_row+1])
+                        # Flatten multi-level columns and remove duplicate prefixes
+                        new_cols = []
+                        for col in df.columns:
+                            parts = [str(c).strip() for c in col if not str(c).startswith('Unnamed')]
+                            # Remove duplicate words (e.g., FIXED_FIXED_BASIC -> FIXED_BASIC)
+                            if len(parts) == 2 and parts[0].upper() == parts[1].split('_')[0].upper():
+                                new_cols.append(parts[1])
+                            else:
+                                new_cols.append('_'.join(parts).strip('_'))
+                        df.columns = new_cols
+                except:
+                    pass
+            else:
+                df = pd.read_excel(file_path)
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
         df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+        
+        print(f"\n=== EXCEL COLUMNS DEBUG ===")
+        print(f"Total columns in Excel: {len(df.columns)}")
+        print(f"All columns: {list(df.columns)}")
+        print(f"=== END DEBUG ===\n")
         
         # Remove empty rows
         df = df.dropna(how='all')
@@ -200,13 +244,42 @@ def upload_file():
         col_map = {col: col for col in df.columns}
         for col in df.columns:
             col_map[col.lower()] = col
+            # Add aliases for common variations
+            col_lower = col.lower().replace(' ', '_')
+            col_map[col_lower] = col
+            
+            # Handle DEDUCTIONS_PF -> PF, DEDUCTIONS_ESI -> ESI, etc.
+            if 'deductions_' in col_lower:
+                col_map[col_lower.replace('deductions_', '')] = col
+            # Handle NET_PAY_EMAIL -> EMAIL, NET_PAY_phone_no -> phone
+            if 'net_pay_' in col_lower:
+                col_map[col_lower.replace('net_pay_', '')] = col
+            
+            # Specific mappings
+            if col_lower == 'total' or col_lower == 'deductions_total':
+                col_map['total_deduction'] = col
+            if col_lower == 'adv' or col_lower == 'deductions_adv':
+                col_map['lwf'] = col
+            if 'esi_no' in col_lower or 'esi no' in col_lower:
+                col_map['esi_no'] = col
+            if 'phone_no' in col_lower or 'phone no' in col_lower:
+                col_map['phone'] = col
+            if col_lower == 'email' or 'net_pay_email' in col_lower:
+                col_map['email'] = col
+            # Map EARNED_HRA.1 or EARNED_HRA.2 to Other_Allowance
+            if 'earned_hra.1' in col_lower or 'earned_hra.2' in col_lower:
+                col_map['other_allowance'] = col
         
         def get_col(name):
             """Get column value with case-insensitive lookup"""
-            return col_map.get(name.lower(), name)
+            result = col_map.get(name.lower(), name)
+            if result == name and name.lower() not in col_map:
+                print(f"WARNING: Column '{name}' not found in Excel!")
+            return result
         
         print(f"Loaded {len(df)} employees from file")
-        print(f"Columns found: {list(df.columns)}")
+        print(f"Columns found: {list(df.columns)[:15]}...")  # Show first 15 columns
+        print(f"Total columns: {len(df.columns)}")
         
         env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
         template = env.get_template("payslip.html")
@@ -222,8 +295,10 @@ def upload_file():
                 emp_id_val = row.get(get_col("EMP_ID"), f"EMP{index+1}")
                 name_val = row.get(get_col("Name"), "")
                 
+                print(f"Row {index+1}: EMP_ID={emp_id_val}, Name={name_val}")
+                
                 if pd.isna(emp_id_val) or pd.isna(name_val) or str(name_val).strip() == "":
-                    print(f"Skipping empty row {index+1}")
+                    print(f"Skipping empty row {index+1} - EMP_ID: {emp_id_val}, Name: {name_val}")
                     continue
                 
                 emp_id = str(emp_id_val).strip()
