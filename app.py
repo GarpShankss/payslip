@@ -262,9 +262,6 @@ def upload_file():
                 with open(html_path, "w", encoding="utf-8") as f:
                     f.write(html_content)
 
-                if not os.path.exists(WKHTMLTOPDF_CMD):
-                    return jsonify({"error": f"wkhtmltopdf not found at {WKHTMLTOPDF_CMD}"}), 500
-
                 result = subprocess.run([WKHTMLTOPDF_CMD, "--enable-local-file-access", "--page-size", "A4",
                     "--margin-top", "10mm", "--margin-bottom", "10mm", "--margin-left", "10mm",
                     "--margin-right", "10mm", html_path, pdf_path], capture_output=True, text=True, timeout=30)
