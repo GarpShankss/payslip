@@ -30,10 +30,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Detect wkhtmltopdf path (Docker vs Windows)
-if os.path.exists('/usr/bin/wkhtmltopdf'):
-    WKHTMLTOPDF_CMD = '/usr/bin/wkhtmltopdf'
-else:
-    WKHTMLTOPDF_CMD = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+WKHTMLTOPDF_CMD = '/usr/bin/wkhtmltopdf' if os.path.exists('/usr/bin/wkhtmltopdf') else r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+print(f"Using wkhtmltopdf at: {WKHTMLTOPDF_CMD}")
 
 COMPANY = {
     "name": "RS MAN-TECH",
