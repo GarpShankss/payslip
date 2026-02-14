@@ -192,6 +192,22 @@ def upload_file():
             return jsonify({"error": "Unsupported file type"}), 400
 
         df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+        
+        # Remove empty rows
+        df = df.dropna(how='all')
+        
+        # Create case-insensitive column mapping
+        col_map = {col: col for col in df.columns}
+        for col in df.columns:
+            col_map[col.lower()] = col
+        
+        def get_col(name):
+            """Get column value with case-insensitive lookup"""
+            return col_map.get(name.lower(), name)
+        
+        print(f"Loaded {len(df)} employees from file")
+        print(f"Columns found: {list(df.columns)}")
+        
         env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
         template = env.get_template("payslip.html")
         logo_base64 = get_logo_base64()
@@ -202,56 +218,65 @@ def upload_file():
 
         for index, row in df.iterrows():
             try:
-                emp_id = str(row.get("EMP_ID", f"EMP{index+1}")).strip()
+                # Skip rows with no EMP_ID or Name
+                emp_id_val = row.get(get_col("EMP_ID"), f"EMP{index+1}")
+                name_val = row.get(get_col("Name"), "")
+                
+                if pd.isna(emp_id_val) or pd.isna(name_val) or str(name_val).strip() == "":
+                    print(f"Skipping empty row {index+1}")
+                    continue
+                
+                emp_id = str(emp_id_val).strip()
                 pay_month = month
                 print(f"Processing employee {emp_id}...")
 
 
                 salary_fixed = {
-                    "basic": get_numeric_value(row.get("Fixed_Basic")),
-                    "da": get_numeric_value(row.get("Fixed_DA")),
-                    "hra": get_numeric_value(row.get("Fixed_HRA")),
+                    "basic": get_numeric_value(row.get(get_col("Fixed_Basic"))),
+                    "da": get_numeric_value(row.get(get_col("Fixed_DA"))),
+                    "hra": get_numeric_value(row.get(get_col("Fixed_HRA"))),
                     "leave_wages": 0,
                     "others": 0,
-                    "bonus": get_numeric_value(row.get("Fixed_Bonus")),
-                    "total": get_numeric_value(row.get("Fixed_Total")),
+                    "bonus": get_numeric_value(row.get(get_col("Fixed_Bonus"))),
+                    "total": get_numeric_value(row.get(get_col("Fixed_Total"))),
                 }
 
                 salary_earned = {
-                    "basic": get_numeric_value(row.get("Earned_Basic")),
-                    "da": get_numeric_value(row.get("Earned_DA")),
-                    "hra": get_numeric_value(row.get("Earned_HRA")),
+                    "basic": get_numeric_value(row.get(get_col("Earned_Basic"))),
+                    "da": get_numeric_value(row.get(get_col("Earned_DA"))),
+                    "hra": get_numeric_value(row.get(get_col("Earned_HRA"))),
                     "leave_wages": 0,
-                    "others": get_numeric_value(row.get("Other_Allowance")),
-                    "bonus": get_numeric_value(row.get("Earned_Bonus")),
-                    "total": get_numeric_value(row.get("Earned_Total")),
+                    "others": get_numeric_value(row.get(get_col("Other_Allowance"))),
+                    "bonus": get_numeric_value(row.get(get_col("Earned_Bonus"))),
+                    "total": get_numeric_value(row.get(get_col("Earned_Total"))),
                 }
 
                 deduction = {
-                    "pf": get_numeric_value(row.get("PF")),
-                    "esi": get_numeric_value(row.get("ESI")),
-                    "pt": get_numeric_value(row.get("PT")),
-                    "lwf": get_numeric_value(row.get("LWF")),
+                    "pf": get_numeric_value(row.get(get_col("PF"))),
+                    "esi": get_numeric_value(row.get(get_col("ESI"))),
+                    "pt": get_numeric_value(row.get(get_col("PT"))),
+                    "lwf": get_numeric_value(row.get(get_col("LWF"))),
                     "adv": 0,
-                    "total": get_numeric_value(row.get("Total_Deduction")),
+                    "total": get_numeric_value(row.get(get_col("Total_Deduction"))),
                 }
 
-                net_pay = get_numeric_value(row.get("Net_Pay"))
+                net_pay = get_numeric_value(row.get(get_col("Net_Pay")))
                 net_pay_words = number_to_words(net_pay)
 
                 emp_data = {
                     "emp_id": emp_id,
-                    "name": str(row.get("Name", "")).strip(),
-                    "designation": str(row.get("Designation", "")).strip(),
-                    "unit_name": str(row.get("Unit_Name", "")).strip(),
-                    "uan": str(row.get("UAN_No", "")).strip(),
-                    "esi": str(row.get("ESI_No", "")).strip(),
-                    "doj": str(row.get("DOJ", "")).strip(),
-                    "bank_ac": str(row.get("Bank_AC", "")).strip(),
-                    "ifsc": str(row.get("IFSC_Code", "")).strip(),
-                    "email": str(row.get("Email", "")).strip(),
-                    "basic_days": str(row.get("Basic_Days", "31")).strip(),
-                    "actual_days": str(row.get("Actual_Days", "31")).strip(),
+                    "name": str(row.get(get_col("Name"), "")).strip(),
+                    "designation": str(row.get(get_col("Designation"), "")).strip(),
+                    "unit_name": str(row.get(get_col("Unit_Name"), "")).strip(),
+                    "uan": str(row.get(get_col("UAN_No"), "")).strip(),
+                    "esi": str(row.get(get_col("ESI_No"), "")).strip(),
+                    "doj": str(row.get(get_col("DOJ"), "")).strip(),
+                    "bank_ac": str(row.get(get_col("Bank_AC"), "")).strip(),
+                    "ifsc": str(row.get(get_col("IFSC_Code"), "")).strip(),
+                    "email": str(row.get(get_col("Email"), "")).strip(),
+                    "phone": str(row.get(get_col("Phone"), "")).strip(),
+                    "basic_days": str(row.get(get_col("Basic_Days"), "31")).strip(),
+                    "actual_days": str(row.get(get_col("Actual_Days"), "31")).strip(),
                 }
 
                 html_content = template.render(

@@ -1,0 +1,52 @@
+REQUIRED EXCEL COLUMNS FOR PAYSLIP GENERATOR
+=============================================
+
+✅ COLUMN NAMES ARE NOW CASE-INSENSITIVE!
+You can use CAPS, lowercase, or mixed case - all will work!
+
+EMPLOYEE INFORMATION:
+- EMP_ID          (Employee ID)
+- NAME            (Employee Name)
+- DESIGNATION     (Job Title)
+- UNIT_NAME       (Department/Unit)
+- UAN_NO          (UAN Number)
+- ESI_NO          (ESI Number)
+- DOJ             (Date of Joining)
+- BANK_AC         (Bank Account Number)
+- IFSC_CODE       (IFSC Code)
+- EMAIL           (Email Address)
+- PHONE           (Phone Number)
+- BASIC_DAYS      (Total Days in Month, default: 31)
+- ACTUAL_DAYS     (Days Worked, default: 31)
+
+SALARY - FIXED:
+- FIXED_BASIC     (Fixed Basic Salary)
+- FIXED_DA        (Fixed DA)
+- FIXED_HRA       (Fixed HRA)
+- FIXED_BONUS     (Fixed Bonus)
+- FIXED_TOTAL     (Total Fixed Salary)
+
+SALARY - EARNED:
+- EARNED_BASIC    (Earned Basic Salary)
+- EARNED_DA       (Earned DA)
+- EARNED_HRA      (Earned HRA)
+- EARNED_BONUS    (Earned Bonus)
+- OTHER_ALLOWANCE (Other Allowances)
+- EARNED_TOTAL    (Total Earned Salary)
+
+DEDUCTIONS:
+- PF              (Provident Fund)
+- ESI             (ESI Deduction)
+- PT              (Professional Tax)
+- LWF             (Labour Welfare Fund)
+- TOTAL_DEDUCTION (Total Deductions)
+
+NET PAY:
+- NET_PAY         (Net Salary After Deductions)
+
+IMPORTANT NOTES:
+1. ✅ Column names are CASE-INSENSITIVE (CAPS, lowercase, mixed - all work!)
+2. ✅ Empty rows are automatically skipped
+3. ✅ Rows without employee name are skipped
+4. Use underscores (_) not spaces in column names
+5. Example: EMP_ID, Emp_Id, emp_id - all work the same!
