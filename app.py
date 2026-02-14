@@ -240,6 +240,49 @@ def upload_file():
         # Remove empty rows
         df = df.dropna(how='all')
         
+        # Validate ALL required columns BEFORE processing
+        required_columns = [
+            'Name', 'EMP_ID', 'Fixed_Basic', 'Fixed_DA', 'Fixed_HRA', 'Fixed_Total',
+            'Earned_Basic', 'Earned_DA', 'Earned_HRA', 'Earned_Total',
+            'PF', 'ESI', 'PT', 'Total_Deduction', 'Net_Pay'
+        ]
+        
+        # Create case-insensitive column mapping for validation
+        excel_cols_lower = {col.lower(): col for col in df.columns}
+        missing_required = []
+        
+        for col in required_columns:
+            col_lower = col.lower()
+            # Check if column exists (exact match or with prefix)
+            found = False
+            if col_lower in excel_cols_lower:
+                found = True
+            elif col_lower == 'pf' and 'deductions_pf' in excel_cols_lower:
+                found = True
+            elif col_lower == 'esi' and 'deductions_esi' in excel_cols_lower:
+                found = True
+            elif col_lower == 'pt' and 'deductions_pt' in excel_cols_lower:
+                found = True
+            elif col_lower == 'total_deduction' and 'deductions_total' in excel_cols_lower:
+                found = True
+            elif col_lower.startswith('fixed_'):
+                base_name = col_lower.replace('fixed_', '')
+                if base_name in excel_cols_lower or f'fixed_{base_name}' in excel_cols_lower:
+                    found = True
+            elif col_lower.startswith('earned_'):
+                base_name = col_lower.replace('earned_', '')
+                if base_name in excel_cols_lower or f'earned_{base_name}' in excel_cols_lower:
+                    found = True
+            
+            if not found:
+                missing_required.append(col)
+        
+        if missing_required:
+            error_msg = f"❌ Cannot generate payslips.\n\nRequired columns missing: {', '.join(missing_required)}\n\n"
+            error_msg += f"Your Excel has: {', '.join(list(df.columns)[:20])}\n\n"
+            error_msg += "Please add ALL required columns and try again."
+            return jsonify({"error": error_msg}), 400
+        
         # Create case-insensitive column mapping
         col_map = {col: col for col in df.columns}
         for col in df.columns:
@@ -269,13 +312,18 @@ def upload_file():
             # Map EARNED_HRA.1 or EARNED_HRA.2 to Other_Allowance
             if 'earned_hra.1' in col_lower or 'earned_hra.2' in col_lower:
                 col_map['other_allowance'] = col
+            # Map EARNED_Other_Allowance to Other_Allowance
+            if col_lower == 'earned_other_allowance':
+                col_map['other_allowance'] = col
         
         def get_col(name):
             """Get column value with case-insensitive lookup"""
             result = col_map.get(name.lower(), name)
             if result == name and name.lower() not in col_map:
-                print(f"WARNING: Column '{name}' not found in Excel!")
+                missing_columns.add(name)
             return result
+        
+        missing_columns = set()
         
         print(f"Loaded {len(df)} employees from file")
         print(f"Columns found: {list(df.columns)[:15]}...")  # Show first 15 columns
@@ -320,7 +368,7 @@ def upload_file():
                     "basic": get_numeric_value(row.get(get_col("Earned_Basic"))),
                     "da": get_numeric_value(row.get(get_col("Earned_DA"))),
                     "hra": get_numeric_value(row.get(get_col("Earned_HRA"))),
-                    "leave_wages": 0,
+                    "leave_wages": get_numeric_value(row.get(get_col("Earned_Leave_Wages"))),
                     "others": get_numeric_value(row.get(get_col("Other_Allowance"))),
                     "bonus": get_numeric_value(row.get(get_col("Earned_Bonus"))),
                     "total": get_numeric_value(row.get(get_col("Earned_Total"))),
@@ -408,9 +456,27 @@ def upload_file():
         print(f"\nGENERATION COMPLETE - Success: {success_count}/{len(df)}, Errors: {error_count}/{len(df)}\n")
 
         if success_count == 0:
-            return jsonify({"error": "No payslips generated"}), 500
+            error_msg = "❌ No payslips generated.\n\n"
+            if missing_columns:
+                missing_list = sorted(list(missing_columns))
+                error_msg += f"Missing columns in your Excel: {', '.join(missing_list)}\n\n"
+                error_msg += "Please add these columns and try again."
+            else:
+                error_msg += "All rows were skipped. Check if your Excel has data."
+            return jsonify({"error": error_msg}), 500
+        
+        # Show missing columns warning to user
+        warning_msg = ""
+        if missing_columns:
+            missing_list = sorted(list(missing_columns))
+            warning_msg = f"Warning: The following columns were not found in your Excel file: {', '.join(missing_list)}. These fields will be empty in the payslips."
+            print(f"\n{warning_msg}\n")
 
-        return jsonify({"message": f"Generated {success_count} payslip(s)", "preview": preview})
+        return jsonify({
+            "message": f"Generated {success_count} payslip(s)", 
+            "preview": preview,
+            "warning": warning_msg if missing_columns else None
+        })
 
     except Exception as e:
         print(f"\nFATAL ERROR: {traceback.format_exc()}\n")

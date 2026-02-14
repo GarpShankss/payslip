@@ -250,7 +250,11 @@ function uploadCSV() {
                 return;
             }
 
-            showStatus(data.message || 'Payslips generated successfully', 'success');
+            let statusMsg = data.message || 'Payslips generated successfully';
+            if (data.warning) {
+                statusMsg += '\n\n⚠️ ' + data.warning;
+            }
+            showStatus(statusMsg, data.warning ? 'processing' : 'success');
             
             document.getElementById('downloadCurrentBtn').disabled = false;
 
