@@ -199,7 +199,7 @@ def upload_file():
             try:
                 emp_id = str(row.get("EMP_ID", f"EMP{index+1}")).strip()
                 pay_month = month
-                print(f"DEBUG: Storing to S3 with month folder: {pay_month}")
+                print(f"Processing employee {emp_id}...")
 
 
                 salary_fixed = {
@@ -266,7 +266,15 @@ def upload_file():
                     "--margin-top", "10mm", "--margin-bottom", "10mm", "--margin-left", "10mm",
                     "--margin-right", "10mm", html_path, pdf_path], capture_output=True, text=True, timeout=30)
 
-                if result.returncode != 0 or not os.path.exists(pdf_path):
+                if result.returncode != 0:
+                    print(f"ERROR: wkhtmltopdf failed for {emp_id}")
+                    print(f"STDOUT: {result.stdout}")
+                    print(f"STDERR: {result.stderr}")
+                    error_count += 1
+                    continue
+                    
+                if not os.path.exists(pdf_path):
+                    print(f"ERROR: PDF not created for {emp_id}")
                     error_count += 1
                     continue
 
@@ -283,10 +291,12 @@ def upload_file():
                 success_count += 1
 
             except subprocess.TimeoutExpired:
+                print(f"ERROR: Timeout for employee {emp_id}")
                 error_count += 1
                 continue
             except Exception as emp_error:
-                print(f"ERROR: {str(emp_error)}")
+                print(f"ERROR processing {emp_id}: {str(emp_error)}")
+                print(f"Traceback: {traceback.format_exc()}")
                 error_count += 1
                 continue
 
