@@ -176,6 +176,7 @@ def upload_file():
 
         file = request.files["csv_file"]
         month = request.form.get("month", "NA")
+        year = request.form.get("year", str(datetime.now().year))
         filename = secure_filename(file.filename)
         file_path = os.path.join(UPLOAD_DIR, filename)
         file.save(file_path)
@@ -398,8 +399,8 @@ def upload_file():
                     "ifsc": str(row.get(get_col("IFSC_Code"), "")).strip(),
                     "email": str(row.get(get_col("Email"), "")).strip(),
                     "phone": str(row.get(get_col("Phone"), "")).strip(),
-                    "basic_days": str(row.get(get_col("Basic_Days"), "31")).strip(),
-                    "actual_days": str(row.get(get_col("Actual_Days"), "31")).strip(),
+                    "basic_days": str(int(float(row.get(get_col("Basic_Days"), 31)))) if pd.notna(row.get(get_col("Basic_Days"))) else "31",
+                    "actual_days": str(int(float(row.get(get_col("Actual_Days"), 31)))) if pd.notna(row.get(get_col("Actual_Days"))) else "31",
                 }
 
                 html_content = template.render(
@@ -432,8 +433,8 @@ def upload_file():
                     continue
 
                 try:
-                    print(f"DEBUG: Storing to S3 with month folder: {pay_month}")
-                    s3_key = upload_to_s3(pdf_path, month=pay_month)
+                    print(f"DEBUG: Storing to S3 with year/month folder: {year}/{pay_month}")
+                    s3_key = upload_to_s3(pdf_path, month=pay_month, year=year)
                     print(f"DEBUG: S3 key created: {s3_key}")
                     current_session_pdfs.append(s3_key)
                 except Exception as s3_error:
@@ -549,8 +550,9 @@ def download_current_session():
 def download_pdfs():
     try:
         month = request.args.get("month")
-        print(f"DEBUG: Searching S3 for month: {month}")
-        s3_pdf_keys = list_s3_pdfs(month=month)
+        year = request.args.get("year")
+        print(f"DEBUG: Searching S3 for year/month: {year}/{month}")
+        s3_pdf_keys = list_s3_pdfs(month=month, year=year)
         print(f"DEBUG: Found keys: {s3_pdf_keys}")
         
         if not s3_pdf_keys:
@@ -563,8 +565,8 @@ def download_pdfs():
                 zipf.writestr(os.path.basename(s3_key), pdf_data.read())
 
         zip_buffer.seek(0)
-        return send_file(zip_buffer, mimetype='application/zip', as_attachment=True,
-            download_name=f'payslips_{month}.zip' if month else 'payslips.zip')
+        filename = f'payslips_{year}_{month}.zip' if year and month else f'payslips_{month}.zip' if month else 'payslips.zip'
+        return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name=filename)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

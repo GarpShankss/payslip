@@ -42,7 +42,7 @@
 
         .form-row {
             display: grid;
-            grid-template-columns: 1fr 200px;
+            grid-template-columns: 1fr 150px 100px;
             gap: 15px;
             margin-bottom: 20px;
         }
@@ -159,6 +159,13 @@
                     <option>July</option><option>August</option><option>September</option>
                     <option>October</option><option>November</option><option>December</option>
                 </select>
+                
+                <select id="year">
+                    <option>2024</option>
+                    <option selected>2025</option>
+                    <option>2026</option>
+                    <option>2027</option>
+                </select>
             </div>
 
             <div class="button-grid">
@@ -225,7 +232,8 @@ function downloadCurrent() {
 
 function downloadByMonth() {
     const month = document.getElementById('month').value;
-    window.location.href = `/download?month=${month}`;
+    const year = document.getElementById('year').value;
+    window.location.href = `/download?month=${month}&year=${year}`;
 }
 
 function uploadCSV() {
@@ -237,6 +245,7 @@ function uploadCSV() {
     const formData = new FormData();
     formData.append('csv_file', selectedFile);
     formData.append('month', document.getElementById('month').value);
+    formData.append('year', document.getElementById('year').value);
     currentMonth = document.getElementById('month').value;
 
     showStatus('Processing payslips...', 'processing');
