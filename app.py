@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 from datetime import datetime
 import zipfile
@@ -13,6 +14,13 @@ from dotenv import load_dotenv
 import io
 from whatsapp_utils import send_payslip_whatsapp
 from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for
+
+# Fix Windows console unicode encoding issues
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 import pandas as pd
 from werkzeug.utils import secure_filename
@@ -55,7 +63,7 @@ def cleanup_old_sessions():
         sessions_to_delete = sessions[:-MAX_SESSIONS] if len(sessions) > MAX_SESSIONS else []
         for old_session in sessions_to_delete:
             shutil.rmtree(old_session, ignore_errors=True)
-            print(f"🗑 Deleted old session: {old_session}")
+            print(f"[CLEANUP] Deleted old session: {old_session}")
     except Exception as e:
         print(f"Cleanup error: {e}")
 
@@ -226,13 +234,13 @@ def upload_file():
             except UnicodeDecodeError:
                 df = pd.read_csv(file_path, encoding="latin1", engine="python")
         elif ext in [".xlsx", ".xls"]:
-            # Find the correct header row by looking for EMP_ID or NAME column
+            # Find the correct header row by looking for EMP_ID, NAME, or Sl.No column
             header_row = None
             for row_num in range(10):  # Check first 10 rows
                 try:
                     test_df = pd.read_excel(file_path, header=row_num, nrows=1)
                     cols_lower = [str(c).lower() for c in test_df.columns]
-                    if any('emp' in c or 'name' in c or 'id' in c for c in cols_lower if not c.startswith('unnamed')):
+                    if any('emp' in c or 'name' in c or 'id' in c or 'sl.no' in c or 'sl no' in c for c in cols_lower if not c.startswith('unnamed')):
                         header_row = row_num
                         print(f"Found header row at: {row_num}")
                         break
@@ -240,133 +248,135 @@ def upload_file():
                     continue
             
             if header_row is not None:
-                df = pd.read_excel(file_path, header=header_row)
-                
-                # Handle multi-row headers by merging with next row if needed
-                # Check if next row has additional column names
                 try:
                     next_row_df = pd.read_excel(file_path, header=header_row+1, nrows=1)
                     next_cols = [str(c).lower() for c in next_row_df.columns]
-                    # If next row has salary columns, merge the headers
-                    if any('fixed' in c or 'earned' in c or 'deduction' in c for c in next_cols if not c.startswith('unnamed')):
+                    # If next row has salary columns or subheaders, merge the headers
+                    if any('fixed' in c or 'earned' in c or 'deduction' in c or 'basic' in c or 'uan' in c for c in next_cols if not c.startswith('unnamed')):
                         print(f"Detected multi-row headers, merging row {header_row} and {header_row+1}")
-                        # Read both rows as headers
                         df = pd.read_excel(file_path, header=[header_row, header_row+1])
-                        # Flatten multi-level columns and remove duplicate prefixes
                         new_cols = []
                         for col in df.columns:
                             parts = [str(c).strip() for c in col if not str(c).startswith('Unnamed')]
-                            # Remove duplicate words (e.g., FIXED_FIXED_BASIC -> FIXED_BASIC)
                             if len(parts) == 2 and parts[0].upper() == parts[1].split('_')[0].upper():
                                 new_cols.append(parts[1])
                             else:
                                 new_cols.append('_'.join(parts).strip('_'))
                         df.columns = new_cols
+                    else:
+                        df = pd.read_excel(file_path, header=header_row)
                 except:
-                    pass
+                    df = pd.read_excel(file_path, header=header_row)
             else:
                 df = pd.read_excel(file_path)
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
         df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+        df = df.dropna(how='all')
         
         print(f"\n=== EXCEL COLUMNS DEBUG ===")
         print(f"Total columns in Excel: {len(df.columns)}")
         print(f"All columns: {list(df.columns)}")
         print(f"=== END DEBUG ===\n")
-        
-        # Remove empty rows
-        df = df.dropna(how='all')
-        
-        # Validate ALL required columns BEFORE processing
-        required_columns = [
-            'Name', 'EMP_ID', 'Fixed_Basic', 'Fixed_DA', 'Fixed_HRA', 'Fixed_Total',
-            'Earned_Basic', 'Earned_DA', 'Earned_HRA', 'Earned_Total',
-            'PF', 'ESI', 'PT', 'Total_Deduction', 'Net_Pay'
-        ]
-        
-        # Create case-insensitive column mapping for validation
-        excel_cols_lower = {col.lower(): col for col in df.columns}
-        missing_required = []
-        
-        for col in required_columns:
-            col_lower = col.lower()
-            # Check if column exists (exact match or with prefix)
-            found = False
-            if col_lower in excel_cols_lower:
-                found = True
-            elif col_lower == 'pf' and 'deductions_pf' in excel_cols_lower:
-                found = True
-            elif col_lower == 'esi' and 'deductions_esi' in excel_cols_lower:
-                found = True
-            elif col_lower == 'pt' and 'deductions_pt' in excel_cols_lower:
-                found = True
-            elif col_lower == 'total_deduction' and 'deductions_total' in excel_cols_lower:
-                found = True
-            elif col_lower.startswith('fixed_'):
-                base_name = col_lower.replace('fixed_', '')
-                if base_name in excel_cols_lower or f'fixed_{base_name}' in excel_cols_lower:
-                    found = True
-            elif col_lower.startswith('earned_'):
-                base_name = col_lower.replace('earned_', '')
-                if base_name in excel_cols_lower or f'earned_{base_name}' in excel_cols_lower:
-                    found = True
-            
-            if not found:
-                missing_required.append(col)
-        
-        if missing_required:
-            error_msg = f"❌ Cannot generate payslips.\n\nRequired columns missing: {', '.join(missing_required)}\n\n"
-            error_msg += f"Your Excel has: {', '.join(list(df.columns)[:20])}\n\n"
-            error_msg += "Please add ALL required columns and try again."
-            return jsonify({"error": error_msg}), 400
-        
-        # Create case-insensitive column mapping
+
+        # Create case-insensitive column lookup dictionary
         col_map = {col: col for col in df.columns}
         for col in df.columns:
             col_map[col.lower()] = col
-            # Add aliases for common variations
             col_lower = col.lower().replace(' ', '_')
             col_map[col_lower] = col
-            
-            # Handle DEDUCTIONS_PF -> PF, DEDUCTIONS_ESI -> ESI, etc.
-            if 'deductions_' in col_lower:
-                col_map[col_lower.replace('deductions_', '')] = col
-            # Handle NET_PAY_EMAIL -> EMAIL, NET_PAY_phone_no -> phone
+            if 'deductions_' in col_lower or 'deduction_' in col_lower:
+                cleaned = col_lower.replace('deductions_', '').replace('deduction_', '')
+                col_map[cleaned] = col
             if 'net_pay_' in col_lower:
                 col_map[col_lower.replace('net_pay_', '')] = col
-            
-            # Specific mappings
-            if col_lower == 'total' or col_lower == 'deductions_total':
-                col_map['total_deduction'] = col
-            if col_lower == 'adv' or col_lower == 'deductions_adv':
-                col_map['lwf'] = col
-            if 'esi_no' in col_lower or 'esi no' in col_lower:
-                col_map['esi_no'] = col
-            if 'phone_no' in col_lower or 'phone no' in col_lower:
-                col_map['phone'] = col
-            if col_lower == 'email' or 'net_pay_email' in col_lower:
-                col_map['email'] = col
-            # Map EARNED_HRA.1 or EARNED_HRA.2 to Other_Allowance
-            if 'earned_hra.1' in col_lower or 'earned_hra.2' in col_lower:
-                col_map['other_allowance'] = col
-            # Map EARNED_Other_Allowance to Other_Allowance
-            if col_lower == 'earned_other_allowance':
-                col_map['other_allowance'] = col
-        
-        def get_col(name):
-            """Get column value with case-insensitive lookup"""
-            result = col_map.get(name.lower(), name)
-            if result == name and name.lower() not in col_map:
-                missing_columns.add(name)
-            return result
-        
-        missing_columns = set()
-        
+
+        def find_col(*candidates):
+            for c in candidates:
+                if c.lower() in col_map:
+                    return col_map[c.lower()]
+                c_slug = c.lower().replace(' ', '_')
+                if c_slug in col_map:
+                    return col_map[c_slug]
+            return None
+
+        # Detect columns in the uploaded Excel
+        col_emp_id = find_col("EMP_ID", "EMP ID", "EMPLOYEE ID", "EMP CODE", "ID", "Sl.No", "Sl No")
+        col_name = find_col("NAME", "EMPLOYEE NAME", "EMP NAME")
+        col_designation = find_col("Designation", "DESIG")
+        col_unit = find_col("Unit_Name", "UNIT NAME", "Unit", "Unit Name")
+        col_uan = find_col("UAN_NO", "UAN NUMBER", "NAME_UAN", "UAN NO", "UAN")
+        col_esi_no = find_col("ESI_NO", "ESI NO", "ESI NUMBER")
+        col_doj = find_col("DOJ", "DATE OF JOINING")
+        col_bank_ac = find_col("BANK_AC", "BANK A/C", "BANK AC", "ACCOUNT", "ACCOUNT NO")
+        col_ifsc = find_col("IFSC_CODE", "IFSC CODE", "IFSC")
+        col_phone = find_col("Phone", "phone no", "NAME_CONTACT", "MOBILE", "CONTACT")
+        col_email = find_col("Email", "EMAIL")
+        col_basic_days = find_col("BASIC_DAYS", "Basic Days", "TOTAL DAYS")
+        col_actual_days = find_col("ACTUAL_DAYS", "Actual Days", "DAYS WORKED")
+
+        # Fixed salary columns
+        col_fix_basic_da = find_col("FIXED_BASIC & DA", "FIXED_BASIC_DA", "BASIC & DA")
+        col_fix_basic = find_col("FIXED_BASIC", "FIXED_BASIC SALARY", "BASIC")
+        col_fix_da = find_col("FIXED_DA", "DA")
+        col_fix_hra = find_col("FIXED_HRA", "HRA")
+        col_fix_leave = find_col("FIXED_LEAVE_WAGES", "FIXED_LEAVE WAGES", "Leave_Wages")
+        col_fix_other = find_col("FIXED_OTHER ALLOWANCE", "FIXED_OTHER_ALLOWANCE", "FIXED_OTHERS", "OTHER ALLOWANCE", "OTHER_ALLOWANCE", "OTHERS")
+        col_fix_special = find_col("FIXED_SPECIAL ALLOW", "FIXED_SPECIAL ALLOWANCE", "FIXED_SPECIAL_ALLOWANCE", "SPECIAL ALLOW", "SPECIAL ALLOWANCE")
+        col_fix_bonus = find_col("FIXED_BONUS", "FIXED_STATUORY BONUS", "FIXED_STATUTORY BONUS", "STATUORY BONUS", "STATUTORY BONUS")
+        col_fix_total = find_col("FIXED_TOTAL", "FIXED_GROSS", "TOTAL")
+
+        # Earned salary columns
+        col_earn_basic_da = find_col("EARNED_BASIC & DA", "EARNED_BASIC_DA")
+        col_earn_basic = find_col("EARNED_BASIC")
+        col_earn_da = find_col("EARNED_DA")
+        col_earn_hra = find_col("EARNED_HRA")
+        col_earn_leave = find_col("EARNED_LEAVE_WAGES", "Earned_Leave_Wages", "LEAVE_WAGES")
+        col_earn_other = find_col("EARNED_OTHER ALLOWANCE", "EARNED_OTHER_ALLOWANCE", "EARNED_OTHERS")
+        if not col_earn_other:
+            # Check for generic other allowance
+            col_earn_other = col_fix_other
+        col_earn_special = find_col("EARNED_SPECIAL ALLOW", "EARNED_SPECIAL ALLOWANCE", "EARNED_SPECIAL_ALLOWANCE")
+        if not col_earn_special:
+            col_earn_special = col_fix_special
+        col_earn_bonus = find_col("EARNED_BONUS", "EARNED_STATUORY BONUS", "EARNED_STATUTORY BONUS")
+        col_earn_total = find_col("EARNED_TOTAL", "EARNED_GROSS")
+
+        # Deductions
+        col_ded_pf = find_col("DEDUCTIONS_PF", "DEDUCTION_PF 12%", "PF 12%", "PF")
+        col_ded_esi = find_col("DEDUCTIONS_ESI", "DEDUCTION_ESI 0.75%", "ESI 0.75%", "ESI")
+        col_ded_pt = find_col("DEDUCTIONS_PT", "DEDUCTION_PT", "PT")
+        col_ded_adv = find_col("DEDUCTIONS_ADV", "DEDUCTION_ADV", "ADV", "ADVANCE")
+        col_ded_lwf = find_col("DEDUCTIONS_LWF", "DEDUCTION_LWF", "LWF")
+        col_ded_total = find_col("DEDUCTIONS_TOTAL", "DEDUCTION_TOTAL", "TOTAL_DEDUCTION")
+
+        # Net pay
+        col_net_pay = find_col("NET_PAY", "NET PAY")
+
+        # Employer Contribution columns
+        col_er_pf = find_col("EMPLOYER CONTRIBUTION_PF  13%", "EMPLOYER CONTRIBUTION_PF 13%", "EMPLOYER CONTRIBUTION_PF", "EMPLOYER_PF")
+        col_er_esi = find_col("EMPLOYER CONTRIBUTION_ESI  3.25%", "EMPLOYER CONTRIBUTION_ESI 3.25%", "EMPLOYER CONTRIBUTION_ESI", "EMPLOYER_ESI")
+        col_er_lww = find_col("EMPLOYER CONTRIBUTION_LWW", "EMPLOYER_LWW", "LWW")
+        col_er_statu_bonus = find_col("EMPLOYER CONTRIBUTION_STATU BONUS", "EMPLOYER_STATU_BONUS", "STATU BONUS")
+        col_er_total = find_col("EMPLOYER CONTRIBUTION_TOTAL", "EMPLOYER_TOTAL")
+
+        has_employer_contribution = any([col_er_pf, col_er_esi, col_er_lww, col_er_statu_bonus, col_er_total])
+
+        # Validate essential columns
+        if not col_name:
+            return jsonify({"error": "❌ Cannot generate payslips: 'NAME' column missing from uploaded file."}), 400
+        if not (col_fix_basic or col_fix_basic_da or col_earn_basic or col_earn_basic_da):
+            return jsonify({"error": "❌ Cannot generate payslips: Basic salary column missing from uploaded file."}), 400
+        if not (col_net_pay or col_earn_total or col_fix_total):
+            return jsonify({"error": "❌ Cannot generate payslips: Net Pay / Total column missing from uploaded file."}), 400
+
         print(f"Loaded {len(df)} employees from file")
-        print(f"Columns found: {list(df.columns)[:15]}...")  # Show first 15 columns
-        print(f"Total columns: {len(df.columns)}")
+        print(f"Has Employer Contribution Section: {has_employer_contribution}")
+        print(f"  Earned other allowance col: {col_earn_other}")
+        print(f"  Earned special allowance col: {col_earn_special}")
+        print(f"  Employer LWW col: {col_er_lww}")
+        print(f"  Employer STATU BONUS col: {col_er_statu_bonus}")
         
         env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
         template = env.get_template("payslip.html")
@@ -375,79 +385,173 @@ def upload_file():
         preview = []
         success_count = 0
         error_count = 0
+        missing_columns = set()
 
         for index, row in df.iterrows():
             try:
-                # Skip rows with no EMP_ID or Name
-                emp_id_val = row.get(get_col("EMP_ID"), f"EMP{index+1}")
-                name_val = row.get(get_col("Name"), "")
-                
-                print(f"Row {index+1}: EMP_ID={emp_id_val}, Name={name_val}")
-                
-                if pd.isna(emp_id_val) or pd.isna(name_val) or str(name_val).strip() == "":
-                    print(f"Skipping empty row {index+1} - EMP_ID: {emp_id_val}, Name: {name_val}")
+                name_val = row.get(col_name) if col_name else ""
+                if pd.isna(name_val) or str(name_val).strip() == "" or str(name_val).strip().lower() in ['total', 'totals', 'grand total']:
+                    print(f"Skipping row {index+1} (empty name or summary row)")
                     continue
-                
-                emp_id = str(emp_id_val).strip()
-                pay_month = month
-                print(f"Processing employee {emp_id}...")
 
+                emp_id_val = row.get(col_emp_id) if col_emp_id else f"EMP{index+1}"
+                emp_id = str(int(float(emp_id_val))) if str(emp_id_val).replace('.0','').isdigit() else str(emp_id_val).strip()
+                
+                pay_month = month
+                print(f"Processing employee {emp_id} - {name_val}...")
+
+                # Fixed basic / DA handling
+                if col_fix_basic_da:
+                    fix_basic_label = "Basic & DA"
+                    fix_basic_val = get_numeric_value(row.get(col_fix_basic_da))
+                    fix_da_val = 0
+                    has_da_row = False
+                else:
+                    fix_basic_label = "Basic"
+                    fix_basic_val = get_numeric_value(row.get(col_fix_basic)) if col_fix_basic else 0
+                    fix_da_val = get_numeric_value(row.get(col_fix_da)) if col_fix_da else 0
+                    has_da_row = bool(col_fix_da or col_earn_da)
+
+                # Earned basic / DA handling
+                if col_earn_basic_da:
+                    earn_basic_val = get_numeric_value(row.get(col_earn_basic_da))
+                    earn_da_val = 0
+                else:
+                    earn_basic_val = get_numeric_value(row.get(col_earn_basic)) if col_earn_basic else 0
+                    earn_da_val = get_numeric_value(row.get(col_earn_da)) if col_earn_da else 0
 
                 salary_fixed = {
-                    "basic": get_numeric_value(row.get(get_col("Fixed_Basic"))),
-                    "da": get_numeric_value(row.get(get_col("Fixed_DA"))),
-                    "hra": get_numeric_value(row.get(get_col("Fixed_HRA"))),
-                    "leave_wages": 0,
-                    "others": 0,
-                    "bonus": get_numeric_value(row.get(get_col("Fixed_Bonus"))),
-                    "total": get_numeric_value(row.get(get_col("Fixed_Total"))),
+                    "basic": fix_basic_val,
+                    "da": fix_da_val,
+                    "hra": get_numeric_value(row.get(col_fix_hra)) if col_fix_hra else 0,
+                    "leave_wages": get_numeric_value(row.get(col_fix_leave)) if col_fix_leave else 0,
+                    "others": get_numeric_value(row.get(col_fix_other)) if col_fix_other else 0,
+                    "special_allowance": get_numeric_value(row.get(col_fix_special)) if col_fix_special else 0,
+                    "bonus": get_numeric_value(row.get(col_fix_bonus)) if col_fix_bonus else 0,
+                    "total": get_numeric_value(row.get(col_fix_total)) if col_fix_total else 0,
                 }
 
                 salary_earned = {
-                    "basic": get_numeric_value(row.get(get_col("Earned_Basic"))),
-                    "da": get_numeric_value(row.get(get_col("Earned_DA"))),
-                    "hra": get_numeric_value(row.get(get_col("Earned_HRA"))),
-                    "leave_wages": get_numeric_value(row.get(get_col("Earned_Leave_Wages"))),
-                    "others": get_numeric_value(row.get(get_col("Other_Allowance"))),
-                    "bonus": get_numeric_value(row.get(get_col("Earned_Bonus"))),
-                    "total": get_numeric_value(row.get(get_col("Earned_Total"))),
+                    "basic": earn_basic_val,
+                    "da": earn_da_val,
+                    "hra": get_numeric_value(row.get(col_earn_hra)) if col_earn_hra else 0,
+                    "leave_wages": get_numeric_value(row.get(col_earn_leave)) if col_earn_leave else 0,
+                    "others": get_numeric_value(row.get(col_earn_other)) if col_earn_other else 0,
+                    "special_allowance": get_numeric_value(row.get(col_earn_special)) if col_earn_special else 0,
+                    "bonus": get_numeric_value(row.get(col_earn_bonus)) if col_earn_bonus else 0,
+                    "total": get_numeric_value(row.get(col_earn_total)) if col_earn_total else 0,
                 }
+
+                # Calculate totals if not present
+                if salary_fixed["total"] == 0:
+                    salary_fixed["total"] = (salary_fixed["basic"] + salary_fixed["da"] + salary_fixed["hra"] +
+                                            salary_fixed["leave_wages"] + salary_fixed["others"] +
+                                            salary_fixed["special_allowance"] + salary_fixed["bonus"])
+
+                if salary_earned["total"] == 0:
+                    salary_earned["total"] = (salary_earned["basic"] + salary_earned["da"] + salary_earned["hra"] +
+                                             salary_earned["leave_wages"] + salary_earned["others"] +
+                                             salary_earned["special_allowance"] + salary_earned["bonus"])
 
                 deduction = {
-                    "pf": get_numeric_value(row.get(get_col("PF"))),
-                    "esi": get_numeric_value(row.get(get_col("ESI"))),
-                    "pt": get_numeric_value(row.get(get_col("PT"))),
-                    "lwf": get_numeric_value(row.get(get_col("LWF"))),
-                    "adv": 0,
-                    "total": get_numeric_value(row.get(get_col("Total_Deduction"))),
+                    "pf": get_numeric_value(row.get(col_ded_pf)) if col_ded_pf else 0,
+                    "esi": get_numeric_value(row.get(col_ded_esi)) if col_ded_esi else 0,
+                    "pt": get_numeric_value(row.get(col_ded_pt)) if col_ded_pt else 0,
+                    "adv": get_numeric_value(row.get(col_ded_adv)) if col_ded_adv else 0,
+                    "lwf": get_numeric_value(row.get(col_ded_lwf)) if col_ded_lwf else 0,
+                    "total": get_numeric_value(row.get(col_ded_total)) if col_ded_total else 0,
                 }
 
-                net_pay = get_numeric_value(row.get(get_col("Net_Pay")))
+                if deduction["total"] == 0:
+                    deduction["total"] = deduction["pf"] + deduction["esi"] + deduction["pt"] + deduction["adv"] + deduction["lwf"]
+
+                net_pay = get_numeric_value(row.get(col_net_pay)) if col_net_pay else (salary_earned["total"] - deduction["total"])
                 net_pay_words = number_to_words(net_pay)
+
+                # Dynamic earnings items (only included if found in uploaded excel or > 0)
+                earnings_items = [
+                    {"name": fix_basic_label, "fixed": salary_fixed["basic"], "earned": salary_earned["basic"]}
+                ]
+                if has_da_row:
+                    earnings_items.append({"name": "DA", "fixed": salary_fixed["da"], "earned": salary_earned["da"]})
+                if col_fix_hra or col_earn_hra or salary_fixed["hra"] > 0 or salary_earned["hra"] > 0:
+                    earnings_items.append({"name": "HRA", "fixed": salary_fixed["hra"], "earned": salary_earned["hra"]})
+                if col_fix_leave or col_earn_leave or salary_fixed["leave_wages"] > 0 or salary_earned["leave_wages"] > 0:
+                    earnings_items.append({"name": "Leave with wages", "fixed": salary_fixed["leave_wages"], "earned": salary_earned["leave_wages"]})
+                if col_fix_other or col_earn_other or salary_fixed["others"] > 0 or salary_earned["others"] > 0:
+                    earnings_items.append({"name": "Other Allowance", "fixed": salary_fixed["others"], "earned": salary_earned["others"]})
+                if col_fix_special or col_earn_special or salary_fixed["special_allowance"] > 0 or salary_earned["special_allowance"] > 0:
+                    earnings_items.append({"name": "Special Allowance", "fixed": salary_fixed["special_allowance"], "earned": salary_earned["special_allowance"]})
+                if col_fix_bonus or col_earn_bonus or salary_fixed["bonus"] > 0 or salary_earned["bonus"] > 0:
+                    earnings_items.append({"name": "Bonus", "fixed": salary_fixed["bonus"], "earned": salary_earned["bonus"]})
+
+                # Dynamic deductions items
+                deductions_items = [
+                    {"name": "Provident Fund", "amount": deduction["pf"]},
+                    {"name": "ESI", "amount": deduction["esi"]},
+                    {"name": "Professional Tax", "amount": deduction["pt"]},
+                ]
+                if col_ded_adv or deduction["adv"] > 0:
+                    deductions_items.append({"name": "ADV", "amount": deduction["adv"]})
+                if col_ded_lwf or deduction["lwf"] > 0:
+                    deductions_items.append({"name": "LWF", "amount": deduction["lwf"]})
+
+                # Pair earnings and deductions rows for balanced table
+                max_rows = max(len(earnings_items), len(deductions_items))
+                salary_rows = []
+                for i in range(max_rows):
+                    salary_rows.append({
+                        "earning": earnings_items[i] if i < len(earnings_items) else None,
+                        "deduction": deductions_items[i] if i < len(deductions_items) else None,
+                    })
+
+                # Employer Contribution values
+                er_pf_val = get_numeric_value(row.get(col_er_pf)) if col_er_pf else 0
+                er_esi_val = get_numeric_value(row.get(col_er_esi)) if col_er_esi else 0
+                er_lww_val = get_numeric_value(row.get(col_er_lww)) if col_er_lww else 0
+                er_statu_bonus_val = get_numeric_value(row.get(col_er_statu_bonus)) if col_er_statu_bonus else 0
+                er_total_val = get_numeric_value(row.get(col_er_total)) if col_er_total else (er_pf_val + er_esi_val + er_lww_val + er_statu_bonus_val)
+
+                employer_contribution = {
+                    "has_data": has_employer_contribution,
+                    "has_pf": bool(col_er_pf),
+                    "pf": er_pf_val,
+                    "has_esi": bool(col_er_esi),
+                    "esi": er_esi_val,
+                    "has_lww": bool(col_er_lww),
+                    "lww": er_lww_val,
+                    "has_statu_bonus": bool(col_er_statu_bonus),
+                    "statu_bonus": er_statu_bonus_val,
+                    "has_total": bool(col_er_total or has_employer_contribution),
+                    "total": er_total_val,
+                }
 
                 emp_data = {
                     "emp_id": emp_id,
-                    "name": str(row.get(get_col("Name"), "")).strip(),
-                    "designation": str(row.get(get_col("Designation"), "")).strip(),
-                    "unit_name": str(row.get(get_col("Unit_Name"), "")).strip(),
-                    "uan": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(get_col("UAN_No"), "")) if pd.notna(row.get(get_col("UAN_No"))) else "",
-                    "esi": str(row.get(get_col("ESI_No"), "")).strip(),
-                    "doj": str(row.get(get_col("DOJ"), "")).strip(),
-                    "bank_ac": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(get_col("Bank_AC"), "")) if pd.notna(row.get(get_col("Bank_AC"))) else "",
-                    "ifsc": str(row.get(get_col("IFSC_Code"), "")).strip(),
-                    "email": str(row.get(get_col("Email"), "")).strip(),
-                    "phone": str(int(float(row.get(get_col("Phone"), 0)))).strip() 
-         if pd.notna(row.get(get_col("Phone"))) 
-         and str(row.get(get_col("Phone"), "")).strip() not in ["", "nan", "0"] 
-         else "",
-                    "basic_days": str(int(float(row.get(get_col("Basic_Days"), 31)))) if pd.notna(row.get(get_col("Basic_Days"))) else "31",
-                    "actual_days": str(int(float(row.get(get_col("Actual_Days"), 31)))) if pd.notna(row.get(get_col("Actual_Days"))) else "31",
+                    "name": str(name_val).strip(),
+                    "designation": str(row.get(col_designation, "")).strip() if col_designation and pd.notna(row.get(col_designation)) else "",
+                    "unit_name": str(row.get(col_unit, "")).strip() if col_unit and pd.notna(row.get(col_unit)) else "",
+                    "uan": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_uan, "")) if col_uan and pd.notna(row.get(col_uan)) else "",
+                    "esi": str(row.get(col_esi_no, "")).strip() if col_esi_no and pd.notna(row.get(col_esi_no)) else "",
+                    "doj": str(row.get(col_doj, "")).strip() if col_doj and pd.notna(row.get(col_doj)) else "",
+                    "bank_ac": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_bank_ac, "")) if col_bank_ac and pd.notna(row.get(col_bank_ac)) else "",
+                    "ifsc": str(row.get(col_ifsc, "")).strip() if col_ifsc and pd.notna(row.get(col_ifsc)) else "",
+                    "email": str(row.get(col_email, "")).strip() if col_email and pd.notna(row.get(col_email)) else "",
+                    "phone": str(int(float(row.get(col_phone, 0)))).strip() 
+                             if col_phone and pd.notna(row.get(col_phone)) 
+                             and str(row.get(col_phone, "")).strip() not in ["", "nan", "0"] 
+                             else "",
+                    "basic_days": str(int(float(row.get(col_basic_days, 31)))) if col_basic_days and pd.notna(row.get(col_basic_days)) else "31",
+                    "actual_days": str(int(float(row.get(col_actual_days, 31)))) if col_actual_days and pd.notna(row.get(col_actual_days)) else "31",
                 }
 
                 html_content = template.render(
                     company=COMPANY, emp=emp_data, salary_fixed=salary_fixed,
-                    salary_earned=salary_earned, deduction=deduction, net_pay=net_pay,
-                    net_pay_words=net_pay_words, month=pay_month,
+                    salary_earned=salary_earned, deduction=deduction,
+                    salary_rows=salary_rows,
+                    has_employer_contribution=has_employer_contribution,
+                    employer_contribution=employer_contribution,
+                    net_pay=net_pay, net_pay_words=net_pay_words, month=pay_month,
                     generated_on=datetime.now().strftime("%d %b %Y"), logo_base64=logo_base64
                 )
 
@@ -473,11 +577,11 @@ def upload_file():
                     error_count += 1
                     continue
 
-                # WITH THIS:
+                # Upload to R2
                 try:
                     emp_name = emp_data["name"]
                     unit_name = emp_data["unit_name"] or "NoUnit"
-                    print(f"DEBUG: Uploading to R2 → {year}/{pay_month}/{emp_name}_{unit_name}.pdf")
+                    print(f"DEBUG: Uploading to R2 -> {year}/{pay_month}/{emp_name}_{unit_name}.pdf")
                     s3_key = upload_with_cleanup(
                         local_path=pdf_path,
                         employee_name=emp_name,
@@ -485,10 +589,10 @@ def upload_file():
                         month=pay_month,
                         year=year
                     )
-                    print(f"✓ Uploaded to R2: {s3_key}")
+                    print(f"[OK] Uploaded to R2: {s3_key}")
                     current_session_pdfs.append(s3_key)
                 except Exception as s3_error:
-                    print(f"✗ R2 upload failed for {emp_id}: {s3_error}")
+                    print(f"[ERROR] R2 upload failed for {emp_id}: {s3_error}")
                     traceback.print_exc()
 
                 preview.append({"EMP_ID": emp_id, "Name": emp_data["name"], "Designation": emp_data["designation"],
@@ -508,7 +612,7 @@ def upload_file():
         print(f"\nGENERATION COMPLETE - Success: {success_count}/{len(df)}, Errors: {error_count}/{len(df)}\n")
 
         if success_count == 0:
-            error_msg = "❌ No payslips generated.\n\n"
+            error_msg = "No payslips generated.\n\n"
             if missing_columns:
                 missing_list = sorted(list(missing_columns))
                 error_msg += f"Missing columns in your Excel: {', '.join(missing_list)}\n\n"
