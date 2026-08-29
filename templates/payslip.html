@@ -236,53 +236,26 @@
       </tr>
     </thead>
     <tbody>
+      {% for row in salary_rows %}
       <tr>
-        <td class="desc">Basic</td>
-        <td class="amount">{{ "%.0f"|format(salary_fixed.basic) }}</td>
-        <td class="amount">{{ "%.0f"|format(salary_earned.basic) }}</td>
-        <td class="desc">Provident Fund</td>
-        <td class="amount">{{ "%.0f"|format(deduction.pf) }}</td>
+        {% if row.earning %}
+          <td class="desc">{{ row.earning.name }}</td>
+          <td class="amount">{{ "%.0f"|format(row.earning.fixed) }}</td>
+          <td class="amount">{{ "%.0f"|format(row.earning.earned) }}</td>
+        {% else %}
+          <td></td>
+          <td></td>
+          <td></td>
+        {% endif %}
+        {% if row.deduction %}
+          <td class="desc">{{ row.deduction.name }}</td>
+          <td class="amount">{{ "%.0f"|format(row.deduction.amount) }}</td>
+        {% else %}
+          <td></td>
+          <td></td>
+        {% endif %}
       </tr>
-
-      <tr>
-        <td class="desc">DA</td>
-        <td class="amount">{{ "%.0f"|format(salary_fixed.da) }}</td>
-        <td class="amount">{{ "%.0f"|format(salary_earned.da) }}</td>
-        <td class="desc">ESI</td>
-        <td class="amount">{{ "%.0f"|format(deduction.esi) }}</td>
-      </tr>
-
-      <tr>
-        <td class="desc">HRA</td>
-        <td class="amount">{{ "%.0f"|format(salary_fixed.hra) }}</td>
-        <td class="amount">{{ "%.0f"|format(salary_earned.hra) }}</td>
-        <td class="desc">Professional Tax</td>
-        <td class="amount">{{ "%.0f"|format(deduction.pt) }}</td>
-      </tr>
-
-      <tr>
-        <td class="desc">Leave with wages</td>
-        <td class="amount">{{ "%.0f"|format(salary_fixed.leave_wages) }}</td>
-        <td class="amount">{{ "%.0f"|format(salary_earned.leave_wages) }}</td>
-        <td class="desc">ADV</td>
-        <td class="amount">{{ "%.0f"|format(deduction.adv) }}</td>
-      </tr>
-
-      <tr>
-        <td class="desc">Others</td>
-        <td class="amount">{{ "%.0f"|format(salary_fixed.others) }}</td>
-        <td class="amount">{{ "%.0f"|format(salary_earned.others) }}</td>
-        <td></td>
-        <td></td>
-      </tr>
-
-      <tr>
-        <td class="desc">Bonus</td>
-        <td class="amount">{{ "%.0f"|format(salary_fixed.bonus) }}</td>
-        <td class="amount">{{ "%.0f"|format(salary_earned.bonus) }}</td>
-        <td></td>
-        <td></td>
-      </tr>
+      {% endfor %}
 
       <tr class="total-row">
         <td class="desc"><strong>Gross Earning</strong></td>
@@ -293,6 +266,50 @@
       </tr>
     </tbody>
   </table>
+
+  <!-- EMPLOYER CONTRIBUTION (Only printed if found in uploaded excel) -->
+  {% if has_employer_contribution and employer_contribution and employer_contribution.has_data %}
+  <table class="salary-table">
+    <thead>
+      <tr>
+        <th style="width: 58%; text-align: left;">Employer Contribution</th>
+        <th style="width: 42%; text-align: center;">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if employer_contribution.has_pf %}
+      <tr>
+        <td class="desc">PF (Employer Contribution 13%)</td>
+        <td class="amount">{{ "%.0f"|format(employer_contribution.pf) }}</td>
+      </tr>
+      {% endif %}
+      {% if employer_contribution.has_esi %}
+      <tr>
+        <td class="desc">ESI (Employer Contribution 3.25%)</td>
+        <td class="amount">{{ "%.0f"|format(employer_contribution.esi) }}</td>
+      </tr>
+      {% endif %}
+      {% if employer_contribution.has_lww %}
+      <tr>
+        <td class="desc">Leave with wages (LWW)</td>
+        <td class="amount">{{ "%.0f"|format(employer_contribution.lww) }}</td>
+      </tr>
+      {% endif %}
+      {% if employer_contribution.has_statu_bonus %}
+      <tr>
+        <td class="desc">Statutory Bonus</td>
+        <td class="amount">{{ "%.0f"|format(employer_contribution.statu_bonus) }}</td>
+      </tr>
+      {% endif %}
+      {% if employer_contribution.has_total %}
+      <tr class="total-row">
+        <td class="desc"><strong>Total Employer Contribution</strong></td>
+        <td class="amount"><strong>{{ "%.0f"|format(employer_contribution.total) }}</strong></td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  {% endif %}
 
   <!-- OT HRS and OT COST -->
   <table class="ot-section">

@@ -137,7 +137,7 @@ def ensure_storage_limit(limit_gb: float = 9.5):
     print(f"Current storage: {size_gb:.3f} GB / {limit_gb} GB limit")
 
     while size_gb >= limit_gb:
-        print(f"⚠ Storage at {size_gb:.3f} GB — cleaning oldest month...")
+        print(f"[WARN] Storage at {size_gb:.3f} GB - cleaning oldest month...")
         delete_oldest_month()
 
         size_bytes = get_bucket_size()

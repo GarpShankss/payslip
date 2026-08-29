@@ -596,9 +596,18 @@ function uploadCSV() {
     showStatus('⏳ Processing payslips, please wait...', 'processing');
 
     fetch('/upload', { method: 'POST', body: formData })
-        .then(r => {
+        .then(async r => {
             if (r.status === 401) { window.location.href = '/login'; return null; }
-            return r.json();
+            const contentType = r.headers.get("content-type");
+            if (contentType && contentType.includes("application/json")) {
+                const data = await r.json();
+                if (!r.ok && !data.error) {
+                    throw new Error(`Server returned error ${r.status}`);
+                }
+                return data;
+            }
+            const text = await r.text();
+            throw new Error(`Server error (${r.status}): ${text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 200)}`);
         })
         .then(data => {
             if (!data) return;
