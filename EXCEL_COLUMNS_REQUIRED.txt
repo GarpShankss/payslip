@@ -1,14 +1,14 @@
-REQUIRED EXCEL COLUMNS FOR PAYSLIP GENERATOR
-=============================================
+REQUIRED & OPTIONAL EXCEL COLUMNS FOR PAYSLIP GENERATOR
+======================================================
 
-✅ COLUMN NAMES ARE NOW CASE-INSENSITIVE!
-You can use CAPS, lowercase, or mixed case - all will work!
+✅ COLUMN NAMES ARE CASE-INSENSITIVE & FLEXIBLE!
+You can use CAPS, lowercase, mixed case, spaces, or underscores - all will work!
 
 EMPLOYEE INFORMATION:
-- EMP_ID          (Employee ID)
-- NAME            (Employee Name)
+- EMP_ID          (Employee ID / Code)
+- NAME            (Employee Name - Required)
 - DESIGNATION     (Job Title)
-- UNIT_NAME       (Department/Unit)
+- UNIT_NAME       (Department / Unit Name)
 - UAN_NO          (UAN Number)
 - ESI_NO          (ESI Number)
 - DOJ             (Date of Joining)
@@ -19,34 +19,55 @@ EMPLOYEE INFORMATION:
 - BASIC_DAYS      (Total Days in Month, default: 31)
 - ACTUAL_DAYS     (Days Worked, default: 31)
 
-SALARY - FIXED:
+SALARY - FIXED (OPTIONAL / AUTO-CALCULATED):
 - FIXED_BASIC     (Fixed Basic Salary)
 - FIXED_DA        (Fixed DA)
 - FIXED_HRA       (Fixed HRA)
-- FIXED_BONUS     (Fixed Bonus)
-- FIXED_TOTAL     (Total Fixed Salary)
+- FIXED_LEAVE_WAGES (Fixed Leave With Wages / LWW)
+- FIXED_SPECIAL_ALLOWANCE (Fixed Special Allowance)
+- FIXED_OTHER_ALLOWANCE   (Fixed Other Allowance)
+- FIXED_TPT       (Fixed Transport / Conveyance Allowance)
+- FIXED_BONUS     (Fixed Statutory Bonus)
+- FIXED_TOTAL     (Total Fixed Gross Salary)
 
 SALARY - EARNED:
 - EARNED_BASIC    (Earned Basic Salary)
 - EARNED_DA       (Earned DA)
 - EARNED_HRA      (Earned HRA)
+- EARNED_LEAVE_WAGES (Earned Leave With Wages / LWW)
+- EARNED_SPECIAL_ALLOWANCE (Earned Special Allowance)
+- EARNED_OTHER_ALLOWANCE   (Earned Other Allowance)
+- EARNED_TPT       (Earned Transport / Conveyance Allowance)
 - EARNED_BONUS    (Earned Bonus)
-- OTHER_ALLOWANCE (Other Allowances)
-- EARNED_TOTAL    (Total Earned Salary)
+- EARNED_TOTAL    (Total Earned Gross Salary)
+
+OVERTIME (OT) - DYNAMIC & OPTIONAL:
+- OT_HRS          (Overtime Hours, e.g. 10 or 10.5)
+- OT_COST         (Overtime Cost / Amount / Earned OT)
+* Note: OT table only appears on the payslip if OT columns/data are present in the Excel!
 
 DEDUCTIONS:
 - PF              (Provident Fund)
 - ESI             (ESI Deduction)
 - PT              (Professional Tax)
+- ADV             (Advance Deduction)
 - LWF             (Labour Welfare Fund)
 - TOTAL_DEDUCTION (Total Deductions)
+
+EMPLOYER CONTRIBUTION - DYNAMIC & OPTIONAL:
+- EMPLOYER_PF     (Employer PF 13%)
+- EMPLOYER_ESI    (Employer ESI 3.25%)
+- EMPLOYER_LWW    (Employer Leave with wages LWW)
+- EMPLOYER_STATU_BONUS (Employer Statutory Bonus)
+- EMPLOYER_TOTAL  (Employer Total Contribution)
+* Note: Employer Contribution table only appears if employer contribution columns are present!
 
 NET PAY:
 - NET_PAY         (Net Salary After Deductions)
 
-IMPORTANT NOTES:
-1. ✅ Column names are CASE-INSENSITIVE (CAPS, lowercase, mixed - all work!)
-2. ✅ Empty rows are automatically skipped
-3. ✅ Rows without employee name are skipped
-4. Use underscores (_) not spaces in column names
-5. Example: EMP_ID, Emp_Id, emp_id - all work the same!
+DYNAMIC COLUMN BEHAVIOR:
+1. Overtime (OT): OT section only shows on the payslip if OT columns/values exist.
+2. Special Allowance: Only appears if present in the Excel.
+3. Other Allowance & TPT: Only appear if present in the Excel.
+4. Leave With Wages (LWW): Only appears if present in the Excel.
+5. All non-standard allowances and deductions are completely optional.

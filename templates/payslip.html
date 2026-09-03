@@ -311,15 +311,17 @@
   </table>
   {% endif %}
 
-  <!-- OT HRS and OT COST -->
+  <!-- OT HRS and OT COST (Only printed if found in uploaded excel) -->
+  {% if has_ot and ot_data and ot_data.has_data %}
   <table class="ot-section">
     <tr>
       <td style="width: 28%; font-weight: bold;">OT Hrs</td>
-      <td style="width: 30%; text-align: center;"></td>
+      <td style="width: 30%; text-align: center;">{{ ot_data.hrs }}</td>
       <td style="width: 28%; font-weight: bold;">OT Cost</td>
-      <td style="width: 14%; text-align: center;"></td>
+      <td style="width: 14%; text-align: center;">{{ "%.0f"|format(ot_data.cost) if ot_data.cost else '0' }}</td>
     </tr>
   </table>
+  {% endif %}
 
   <!-- NET PAY -->
   <div class="net-pay-section">
