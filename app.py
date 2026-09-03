@@ -22,6 +22,7 @@ try:
 except Exception:
     pass
 
+import re
 import pandas as pd
 from werkzeug.utils import secure_filename
 from jinja2 import Environment, FileSystemLoader
@@ -147,6 +148,17 @@ def get_numeric_value(val, default=0):
         return float(val) if pd.notna(val) else default
     except:
         return default
+
+def format_hours_value(val):
+    if pd.isna(val) or str(val).strip() in ["", "nan", "None", "-", "0"]:
+        return "0"
+    try:
+        f = float(val)
+        if f == int(f):
+            return str(int(f))
+        return f"{f:.2f}".rstrip('0').rstrip('.')
+    except:
+        return str(val).strip()
 
 def number_to_words(num):
     try:
@@ -280,25 +292,37 @@ def upload_file():
         print(f"All columns: {list(df.columns)}")
         print(f"=== END DEBUG ===\n")
 
-        # Create case-insensitive column lookup dictionary
-        col_map = {col: col for col in df.columns}
+        # Create case-insensitive and normalized column lookup dictionary
+        col_map = {}
         for col in df.columns:
-            col_map[col.lower()] = col
-            col_lower = col.lower().replace(' ', '_')
-            col_map[col_lower] = col
-            if 'deductions_' in col_lower or 'deduction_' in col_lower:
-                cleaned = col_lower.replace('deductions_', '').replace('deduction_', '')
+            c_str = str(col).strip()
+            col_map[c_str] = col
+            col_map[c_str.lower()] = col
+            col_lower_slug = c_str.lower().replace(' ', '_')
+            col_map[col_lower_slug] = col
+            norm_slug = re.sub(r'[^a-z0-9]+', '_', c_str.lower()).strip('_')
+            if norm_slug:
+                col_map[norm_slug] = col
+            
+            if 'deductions_' in col_lower_slug or 'deduction_' in col_lower_slug:
+                cleaned = col_lower_slug.replace('deductions_', '').replace('deduction_', '')
                 col_map[cleaned] = col
-            if 'net_pay_' in col_lower:
-                col_map[col_lower.replace('net_pay_', '')] = col
+            if 'net_pay_' in col_lower_slug:
+                col_map[col_lower_slug.replace('net_pay_', '')] = col
 
         def find_col(*candidates):
             for c in candidates:
-                if c.lower() in col_map:
-                    return col_map[c.lower()]
-                c_slug = c.lower().replace(' ', '_')
+                c_str = str(c).strip()
+                if c_str in col_map:
+                    return col_map[c_str]
+                if c_str.lower() in col_map:
+                    return col_map[c_str.lower()]
+                c_slug = c_str.lower().replace(' ', '_')
                 if c_slug in col_map:
                     return col_map[c_slug]
+                norm_slug = re.sub(r'[^a-z0-9]+', '_', c_str.lower()).strip('_')
+                if norm_slug in col_map:
+                    return col_map[norm_slug]
             return None
 
         # Detect columns in the uploaded Excel
@@ -316,14 +340,20 @@ def upload_file():
         col_basic_days = find_col("BASIC_DAYS", "Basic Days", "TOTAL DAYS")
         col_actual_days = find_col("ACTUAL_DAYS", "Actual Days", "DAYS WORKED")
 
+        # Overtime (OT)
+        col_ot_hrs = find_col("OT_HRS", "OT HRS", "OT_HOURS", "OT HOURS", "OT HR", "OT_HR", "OVERTIME_HRS", "OVERTIME HOURS", "OT_DAYS", "OT DAYS")
+        col_ot_cost = find_col("OT_COST", "OT COST", "OT_AMT", "OT AMT", "OT_AMOUNT", "OT AMOUNT", "EARNED_OT", "EARNED_OVERTIME", "EARNED_OT_COST", "EARNED_OT_AMOUNT", "OVERTIME_COST", "OVERTIME_AMOUNT", "OVERTIME_AMT", "FIXED_OT", "FIXED_OVERTIME", "OT", "OVERTIME")
+        has_ot_col = bool(col_ot_hrs or col_ot_cost)
+
         # Fixed salary columns
         col_fix_basic_da = find_col("FIXED_BASIC & DA", "FIXED_BASIC_DA", "BASIC & DA")
         col_fix_basic = find_col("FIXED_BASIC", "FIXED_BASIC SALARY", "BASIC")
         col_fix_da = find_col("FIXED_DA", "DA")
         col_fix_hra = find_col("FIXED_HRA", "HRA")
-        col_fix_leave = find_col("FIXED_LEAVE_WAGES", "FIXED_LEAVE WAGES", "Leave_Wages")
-        col_fix_other = find_col("FIXED_OTHER ALLOWANCE", "FIXED_OTHER_ALLOWANCE", "FIXED_OTHERS", "OTHER ALLOWANCE", "OTHER_ALLOWANCE", "OTHERS")
-        col_fix_special = find_col("FIXED_SPECIAL ALLOW", "FIXED_SPECIAL ALLOWANCE", "FIXED_SPECIAL_ALLOWANCE", "SPECIAL ALLOW", "SPECIAL ALLOWANCE")
+        col_fix_leave = find_col("FIXED_LEAVE_WAGES", "FIXED_LEAVE WAGES", "FIXED_LEAVE_WAGE", "FIXED_LEAVE", "FIXED_LWW", "LEAVE_WAGES", "LEAVE WAGES", "Leave_Wages", "LEAVE WITH WAGES", "LEAVE_WITH_WAGES", "LWW", "LEAVE")
+        col_fix_other = find_col("FIXED_OTHER ALLOWANCE", "FIXED_OTHER_ALLOWANCE", "FIXED_OTHER_ALLOW", "FIXED_OTHER ALLOW", "FIXED_OTHERS", "FIXED_OTHER", "OTHER ALLOWANCE", "OTHER_ALLOWANCE", "OTHER ALLOW", "OTHER_ALLOW", "OTHERS", "OTHER", "OTHER_ALLOWANCES", "OTHER ALLOWANCES")
+        col_fix_special = find_col("FIXED_SPECIAL ALLOW", "FIXED_SPECIAL ALLOWANCE", "FIXED_SPECIAL_ALLOWANCE", "FIXED_SPECIAL_ALLOW", "FIXED_SPECIAL", "SPECIAL ALLOW", "SPECIAL ALLOWANCE", "SPECIAL_ALLOW", "SPECIAL_ALLOWANCE", "SPECIAL", "SPL_ALLOW", "SPL_ALLOWANCE", "FIXED_SPL_ALLOW", "FIXED_SPL_ALLOWANCE")
+        col_fix_tpt = find_col("FIXED_TPT", "FIXED_TPT_ALLOWANCE", "FIXED_TPT ALLOWANCE", "FIXED_TRANSPORT", "FIXED_TRANSPORT ALLOWANCE", "FIXED_TRANSPORT_ALLOWANCE", "FIXED_CONVEYANCE", "FIXED_CONVEYANCE ALLOWANCE", "TPT", "TPT_ALLOWANCE", "TPT ALLOWANCE", "TPT ALLOW", "TRANSPORT", "TRANSPORT ALLOWANCE", "TRANSPORT_ALLOWANCE", "CONVEYANCE", "CONVEYANCE ALLOWANCE", "CONVEYANCE_ALLOWANCE", "TRAVELLING ALLOWANCE", "TRAVEL ALLOWANCE")
         col_fix_bonus = find_col("FIXED_BONUS", "FIXED_STATUORY BONUS", "FIXED_STATUTORY BONUS", "STATUORY BONUS", "STATUTORY BONUS")
         col_fix_total = find_col("FIXED_TOTAL", "FIXED_GROSS", "TOTAL")
 
@@ -332,14 +362,18 @@ def upload_file():
         col_earn_basic = find_col("EARNED_BASIC")
         col_earn_da = find_col("EARNED_DA")
         col_earn_hra = find_col("EARNED_HRA")
-        col_earn_leave = find_col("EARNED_LEAVE_WAGES", "Earned_Leave_Wages", "LEAVE_WAGES")
-        col_earn_other = find_col("EARNED_OTHER ALLOWANCE", "EARNED_OTHER_ALLOWANCE", "EARNED_OTHERS")
-        if not col_earn_other:
-            # Check for generic other allowance
+        col_earn_leave = find_col("EARNED_LEAVE_WAGES", "EARNED_LEAVE WAGES", "Earned_Leave_Wages", "EARNED_LEAVE_WAGE", "EARNED_LEAVE", "EARNED_LWW", "EARNED_LEAVE WITH WAGES", "EARNED_LEAVE_WITH_WAGES")
+        if not col_earn_leave and col_fix_leave:
+            col_earn_leave = col_fix_leave
+        col_earn_other = find_col("EARNED_OTHER ALLOWANCE", "EARNED_OTHER_ALLOWANCE", "EARNED_OTHER_ALLOW", "EARNED_OTHER ALLOW", "EARNED_OTHERS", "EARNED_OTHER", "EARNED_OTHER_ALLOWANCES", "EARNED_OTHER ALLOWANCES")
+        if not col_earn_other and col_fix_other:
             col_earn_other = col_fix_other
-        col_earn_special = find_col("EARNED_SPECIAL ALLOW", "EARNED_SPECIAL ALLOWANCE", "EARNED_SPECIAL_ALLOWANCE")
-        if not col_earn_special:
+        col_earn_special = find_col("EARNED_SPECIAL ALLOW", "EARNED_SPECIAL ALLOWANCE", "EARNED_SPECIAL_ALLOWANCE", "EARNED_SPECIAL_ALLOW", "EARNED_SPECIAL", "EARNED_SPL_ALLOW", "EARNED_SPL_ALLOWANCE")
+        if not col_earn_special and col_fix_special:
             col_earn_special = col_fix_special
+        col_earn_tpt = find_col("EARNED_TPT", "EARNED_TPT_ALLOWANCE", "EARNED_TPT ALLOWANCE", "EARNED_TRANSPORT", "EARNED_TRANSPORT ALLOWANCE", "EARNED_TRANSPORT_ALLOWANCE", "EARNED_CONVEYANCE", "EARNED_CONVEYANCE ALLOWANCE")
+        if not col_earn_tpt and col_fix_tpt:
+            col_earn_tpt = col_fix_tpt
         col_earn_bonus = find_col("EARNED_BONUS", "EARNED_STATUORY BONUS", "EARNED_STATUTORY BONUS")
         col_earn_total = find_col("EARNED_TOTAL", "EARNED_GROSS")
 
@@ -355,11 +389,11 @@ def upload_file():
         col_net_pay = find_col("NET_PAY", "NET PAY")
 
         # Employer Contribution columns
-        col_er_pf = find_col("EMPLOYER CONTRIBUTION_PF  13%", "EMPLOYER CONTRIBUTION_PF 13%", "EMPLOYER CONTRIBUTION_PF", "EMPLOYER_PF")
-        col_er_esi = find_col("EMPLOYER CONTRIBUTION_ESI  3.25%", "EMPLOYER CONTRIBUTION_ESI 3.25%", "EMPLOYER CONTRIBUTION_ESI", "EMPLOYER_ESI")
-        col_er_lww = find_col("EMPLOYER CONTRIBUTION_LWW", "EMPLOYER_LWW", "LWW")
-        col_er_statu_bonus = find_col("EMPLOYER CONTRIBUTION_STATU BONUS", "EMPLOYER_STATU_BONUS", "STATU BONUS")
-        col_er_total = find_col("EMPLOYER CONTRIBUTION_TOTAL", "EMPLOYER_TOTAL")
+        col_er_pf = find_col("EMPLOYER CONTRIBUTION_PF  13%", "EMPLOYER CONTRIBUTION_PF 13%", "EMPLOYER CONTRIBUTION_PF", "EMPLOYER_PF", "ER_PF")
+        col_er_esi = find_col("EMPLOYER CONTRIBUTION_ESI  3.25%", "EMPLOYER CONTRIBUTION_ESI 3.25%", "EMPLOYER CONTRIBUTION_ESI", "EMPLOYER_ESI", "ER_ESI")
+        col_er_lww = find_col("EMPLOYER CONTRIBUTION_LWW", "EMPLOYER CONTRIBUTION_LEAVE WAGES", "EMPLOYER CONTRIBUTION_LEAVE WITH WAGES", "EMPLOYER_LWW", "EMPLOYER_LEAVE_WAGES", "EMPLOYER_LEAVE_WITH_WAGES", "ER_LWW", "ER_LEAVE_WAGES")
+        col_er_statu_bonus = find_col("EMPLOYER CONTRIBUTION_STATU BONUS", "EMPLOYER CONTRIBUTION_STATUTORY BONUS", "EMPLOYER_STATU_BONUS", "EMPLOYER_STATUTORY_BONUS", "ER_STATU_BONUS", "STATU BONUS")
+        col_er_total = find_col("EMPLOYER CONTRIBUTION_TOTAL", "EMPLOYER_TOTAL", "ER_TOTAL")
 
         has_employer_contribution = any([col_er_pf, col_er_esi, col_er_lww, col_er_statu_bonus, col_er_total])
 
@@ -372,9 +406,11 @@ def upload_file():
             return jsonify({"error": "❌ Cannot generate payslips: Net Pay / Total column missing from uploaded file."}), 400
 
         print(f"Loaded {len(df)} employees from file")
+        print(f"Has OT columns: {has_ot_col} (Hours: {col_ot_hrs}, Cost: {col_ot_cost})")
         print(f"Has Employer Contribution Section: {has_employer_contribution}")
         print(f"  Earned other allowance col: {col_earn_other}")
         print(f"  Earned special allowance col: {col_earn_special}")
+        print(f"  Earned TPT/Transport allowance col: {col_earn_tpt}")
         print(f"  Employer LWW col: {col_er_lww}")
         print(f"  Employer STATU BONUS col: {col_er_statu_bonus}")
         
@@ -420,6 +456,16 @@ def upload_file():
                     earn_basic_val = get_numeric_value(row.get(col_earn_basic)) if col_earn_basic else 0
                     earn_da_val = get_numeric_value(row.get(col_earn_da)) if col_earn_da else 0
 
+                # OT extraction
+                ot_hrs_str = format_hours_value(row.get(col_ot_hrs)) if col_ot_hrs else "0"
+                ot_cost_val = get_numeric_value(row.get(col_ot_cost)) if col_ot_cost else 0
+                has_ot_for_emp = bool(has_ot_col or ot_cost_val > 0 or (col_ot_hrs and ot_hrs_str not in ["0", ""]))
+                ot_data = {
+                    "has_data": has_ot_for_emp,
+                    "hrs": ot_hrs_str,
+                    "cost": ot_cost_val
+                }
+
                 salary_fixed = {
                     "basic": fix_basic_val,
                     "da": fix_da_val,
@@ -427,6 +473,7 @@ def upload_file():
                     "leave_wages": get_numeric_value(row.get(col_fix_leave)) if col_fix_leave else 0,
                     "others": get_numeric_value(row.get(col_fix_other)) if col_fix_other else 0,
                     "special_allowance": get_numeric_value(row.get(col_fix_special)) if col_fix_special else 0,
+                    "tpt": get_numeric_value(row.get(col_fix_tpt)) if col_fix_tpt else 0,
                     "bonus": get_numeric_value(row.get(col_fix_bonus)) if col_fix_bonus else 0,
                     "total": get_numeric_value(row.get(col_fix_total)) if col_fix_total else 0,
                 }
@@ -438,6 +485,7 @@ def upload_file():
                     "leave_wages": get_numeric_value(row.get(col_earn_leave)) if col_earn_leave else 0,
                     "others": get_numeric_value(row.get(col_earn_other)) if col_earn_other else 0,
                     "special_allowance": get_numeric_value(row.get(col_earn_special)) if col_earn_special else 0,
+                    "tpt": get_numeric_value(row.get(col_earn_tpt)) if col_earn_tpt else 0,
                     "bonus": get_numeric_value(row.get(col_earn_bonus)) if col_earn_bonus else 0,
                     "total": get_numeric_value(row.get(col_earn_total)) if col_earn_total else 0,
                 }
@@ -446,12 +494,12 @@ def upload_file():
                 if salary_fixed["total"] == 0:
                     salary_fixed["total"] = (salary_fixed["basic"] + salary_fixed["da"] + salary_fixed["hra"] +
                                             salary_fixed["leave_wages"] + salary_fixed["others"] +
-                                            salary_fixed["special_allowance"] + salary_fixed["bonus"])
+                                            salary_fixed["special_allowance"] + salary_fixed["tpt"] + salary_fixed["bonus"])
 
                 if salary_earned["total"] == 0:
                     salary_earned["total"] = (salary_earned["basic"] + salary_earned["da"] + salary_earned["hra"] +
                                              salary_earned["leave_wages"] + salary_earned["others"] +
-                                             salary_earned["special_allowance"] + salary_earned["bonus"])
+                                             salary_earned["special_allowance"] + salary_earned["tpt"] + salary_earned["bonus"])
 
                 deduction = {
                     "pf": get_numeric_value(row.get(col_ded_pf)) if col_ded_pf else 0,
@@ -482,6 +530,8 @@ def upload_file():
                     earnings_items.append({"name": "Other Allowance", "fixed": salary_fixed["others"], "earned": salary_earned["others"]})
                 if col_fix_special or col_earn_special or salary_fixed["special_allowance"] > 0 or salary_earned["special_allowance"] > 0:
                     earnings_items.append({"name": "Special Allowance", "fixed": salary_fixed["special_allowance"], "earned": salary_earned["special_allowance"]})
+                if (col_fix_tpt or col_earn_tpt or salary_fixed["tpt"] > 0 or salary_earned["tpt"] > 0) and (col_fix_tpt != col_fix_other and col_earn_tpt != col_earn_other):
+                    earnings_items.append({"name": "Transport Allowance", "fixed": salary_fixed["tpt"], "earned": salary_earned["tpt"]})
                 if col_fix_bonus or col_earn_bonus or salary_fixed["bonus"] > 0 or salary_earned["bonus"] > 0:
                     earnings_items.append({"name": "Bonus", "fixed": salary_fixed["bonus"], "earned": salary_earned["bonus"]})
 
@@ -512,17 +562,19 @@ def upload_file():
                 er_statu_bonus_val = get_numeric_value(row.get(col_er_statu_bonus)) if col_er_statu_bonus else 0
                 er_total_val = get_numeric_value(row.get(col_er_total)) if col_er_total else (er_pf_val + er_esi_val + er_lww_val + er_statu_bonus_val)
 
+                has_employer_data = has_employer_contribution and (er_total_val > 0 or any([col_er_pf, col_er_esi, col_er_lww, col_er_statu_bonus]))
+
                 employer_contribution = {
-                    "has_data": has_employer_contribution,
-                    "has_pf": bool(col_er_pf),
+                    "has_data": has_employer_data,
+                    "has_pf": bool(col_er_pf and (er_pf_val > 0 or has_employer_contribution)),
                     "pf": er_pf_val,
-                    "has_esi": bool(col_er_esi),
+                    "has_esi": bool(col_er_esi and (er_esi_val > 0 or has_employer_contribution)),
                     "esi": er_esi_val,
-                    "has_lww": bool(col_er_lww),
+                    "has_lww": bool(col_er_lww and (er_lww_val > 0 or has_employer_contribution)),
                     "lww": er_lww_val,
-                    "has_statu_bonus": bool(col_er_statu_bonus),
+                    "has_statu_bonus": bool(col_er_statu_bonus and (er_statu_bonus_val > 0 or has_employer_contribution)),
                     "statu_bonus": er_statu_bonus_val,
-                    "has_total": bool(col_er_total or has_employer_contribution),
+                    "has_total": bool(col_er_total or (has_employer_data and er_total_val > 0)),
                     "total": er_total_val,
                 }
 
@@ -551,6 +603,8 @@ def upload_file():
                     salary_rows=salary_rows,
                     has_employer_contribution=has_employer_contribution,
                     employer_contribution=employer_contribution,
+                    has_ot=has_ot_for_emp,
+                    ot_data=ot_data,
                     net_pay=net_pay, net_pay_words=net_pay_words, month=pay_month,
                     generated_on=datetime.now().strftime("%d %b %Y"), logo_base64=logo_base64
                 )
