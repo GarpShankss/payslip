@@ -27,7 +27,6 @@ SALARY - FIXED (OPTIONAL / AUTO-CALCULATED):
 - FIXED_SPECIAL_ALLOWANCE (Fixed Special Allowance)
 - FIXED_OTHER_ALLOWANCE   (Fixed Other Allowance)
 - FIXED_TPT       (Fixed Transport / Conveyance Allowance)
-- FIXED_INCENTIVE (Fixed Incentive / Performance Incentive)
 - FIXED_BONUS     (Fixed Statutory Bonus)
 - FIXED_TOTAL     (Total Fixed Gross Salary)
 
@@ -39,9 +38,12 @@ SALARY - EARNED:
 - EARNED_SPECIAL_ALLOWANCE (Earned Special Allowance)
 - EARNED_OTHER_ALLOWANCE   (Earned Other Allowance)
 - EARNED_TPT       (Earned Transport / Conveyance Allowance)
-- EARNED_INCENTIVE (Earned Incentive / Incentive Amount)
 - EARNED_BONUS    (Earned Bonus)
 - EARNED_TOTAL    (Total Earned Gross Salary)
+
+INCENTIVE - DYNAMIC & OPTIONAL:
+- INCENTIVE         (Incentive / Performance Incentive / Production Incentive / Attendance Incentive)
+* Note: Incentive box only appears on the payslip if INCENTIVE column/data is present in the Excel!
 
 OVERTIME (OT) - DYNAMIC & OPTIONAL:
 - OT_HRS          (Overtime Hours, e.g. 10 or 10.5)
@@ -68,9 +70,9 @@ NET PAY:
 - NET_PAY         (Net Salary After Deductions)
 
 DYNAMIC COLUMN BEHAVIOR:
-1. Overtime (OT): OT section only shows on the payslip if OT columns/values exist.
-2. Special Allowance: Only appears if present in the Excel.
-3. Other Allowance & TPT: Only appear if present in the Excel.
-4. Incentive: Only appears if present in the Excel (e.g. INCENTIVE, EARNED_INCENTIVE, FIXED_INCENTIVE).
+1. Incentive: Standalone column. Incentive box only appears on the payslip if present in the Excel.
+2. Overtime (OT): OT section only shows on the payslip if OT columns/values exist.
+3. Special Allowance: Only appears in earnings if present in the Excel.
+4. Other Allowance & TPT: Only appear in earnings if present in the Excel.
 5. Leave With Wages (LWW): Only appears if present in the Excel.
 6. All non-standard allowances and deductions are completely optional.

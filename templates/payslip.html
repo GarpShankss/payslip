@@ -323,6 +323,16 @@
   </table>
   {% endif %}
 
+  <!-- INCENTIVE (Only printed if found in uploaded excel) -->
+  {% if has_incentive and incentive_data and incentive_data.has_data %}
+  <table class="ot-section">
+    <tr>
+      <td style="width: 58%; font-weight: bold;">Incentive</td>
+      <td style="width: 42%; text-align: center; font-weight: bold;">{{ "%.0f"|format(incentive_data.amount) if incentive_data.amount else '0' }}</td>
+    </tr>
+  </table>
+  {% endif %}
+
   <!-- NET PAY -->
   <div class="net-pay-section">
     <div class="net-pay-row">

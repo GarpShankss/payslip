@@ -245,6 +245,23 @@ if __name__ == "__main__":
     col_ot_cost = find_col("OT_COST", "OT COST", "OT_AMT", "OT AMT", "OT_AMOUNT", "OT AMOUNT", "EARNED_OT", "EARNED_OVERTIME", "EARNED_OT_COST", "EARNED_OT_AMOUNT", "OVERTIME_COST", "OVERTIME_AMOUNT", "OVERTIME_AMT", "FIXED_OT", "FIXED_OVERTIME", "OT", "OVERTIME")
     has_ot_col = bool(col_ot_hrs or col_ot_cost)
 
+    # Incentive - Standalone Optional Column
+    col_incentive = find_col(
+        "INCENTIVE", "INCENTIVES", "INCENTIVE_AMOUNT", "INCENTIVE AMOUNT", "INCENTIVE_AMT",
+        "INCENTIVE AMT", "PERFORMANCE INCENTIVE", "PERFORMANCE_INCENTIVE", "PRODUCTION INCENTIVE",
+        "PRODUCTION_INCENTIVE", "ATTENDANCE INCENTIVE", "ATTENDANCE_INCENTIVE", "MONTHLY INCENTIVE",
+        "MONTHLY_INCENTIVE", "SPECIAL INCENTIVE", "SPECIAL_INCENTIVE", "INC", "INC_AMT", "INC AMT",
+        "INC_AMOUNT", "INC AMOUNT", "VARIABLE PAY", "VARIABLE_PAY", "VAR PAY", "VAR_PAY"
+    )
+    if not col_incentive:
+        for c in df.columns:
+            c_low = str(c).strip().lower()
+            if 'incentive' in c_low or c_low in ['inc', 'inc_amt', 'inc amt', 'var_pay', 'var pay']:
+                col_incentive = c
+                break
+
+    has_incentive_col = bool(col_incentive)
+
     # Fixed salary columns
     col_fix_basic_da = find_col("FIXED_BASIC & DA", "FIXED_BASIC_DA", "BASIC & DA")
     col_fix_basic = find_col("FIXED_BASIC", "FIXED_BASIC SALARY", "BASIC")
@@ -254,7 +271,6 @@ if __name__ == "__main__":
     col_fix_other = find_col("FIXED_OTHER ALLOWANCE", "FIXED_OTHER_ALLOWANCE", "FIXED_OTHER_ALLOW", "FIXED_OTHER ALLOW", "FIXED_OTHERS", "FIXED_OTHER", "OTHER ALLOWANCE", "OTHER_ALLOWANCE", "OTHER ALLOW", "OTHER_ALLOW", "OTHERS", "OTHER", "OTHER_ALLOWANCES", "OTHER ALLOWANCES")
     col_fix_special = find_col("FIXED_SPECIAL ALLOW", "FIXED_SPECIAL ALLOWANCE", "FIXED_SPECIAL_ALLOWANCE", "FIXED_SPECIAL_ALLOW", "FIXED_SPECIAL", "SPECIAL ALLOW", "SPECIAL ALLOWANCE", "SPECIAL_ALLOW", "SPECIAL_ALLOWANCE", "SPECIAL", "SPL_ALLOW", "SPL_ALLOWANCE", "FIXED_SPL_ALLOW", "FIXED_SPL_ALLOWANCE")
     col_fix_tpt = find_col("FIXED_TPT", "FIXED_TPT_ALLOWANCE", "FIXED_TPT ALLOWANCE", "FIXED_TRANSPORT", "FIXED_TRANSPORT ALLOWANCE", "FIXED_TRANSPORT_ALLOWANCE", "FIXED_CONVEYANCE", "FIXED_CONVEYANCE ALLOWANCE", "TPT", "TPT_ALLOWANCE", "TPT ALLOWANCE", "TPT ALLOW", "TRANSPORT", "TRANSPORT ALLOWANCE", "TRANSPORT_ALLOWANCE", "CONVEYANCE", "CONVEYANCE ALLOWANCE", "CONVEYANCE_ALLOWANCE", "TRAVELLING ALLOWANCE", "TRAVEL ALLOWANCE")
-    col_fix_incentive = find_col("FIXED_INCENTIVE", "FIXED INCENTIVE", "FIXED_INCENTIVES", "FIXED INCENTIVES", "FIXED_INCENTIVE_AMOUNT", "FIXED_INCENTIVE_AMT", "FIXED_PERFORMANCE_INCENTIVE", "FIXED PERFORMANCE INCENTIVE", "FIXED_PRODUCTION_INCENTIVE", "FIXED PRODUCTION INCENTIVE", "FIXED_ATTENDANCE_INCENTIVE", "FIXED ATTENDANCE INCENTIVE", "FIXED_MONTHLY_INCENTIVE", "FIXED MONTHLY INCENTIVE", "INCENTIVE", "INCENTIVES", "INCENTIVE_AMOUNT", "INCENTIVE AMOUNT", "INCENTIVE_AMT", "INCENTIVE AMT", "PERFORMANCE INCENTIVE", "PRODUCTION INCENTIVE", "ATTENDANCE INCENTIVE", "MONTHLY INCENTIVE")
     col_fix_bonus = find_col("FIXED_BONUS", "FIXED_STATUORY BONUS", "FIXED_STATUTORY BONUS", "STATUORY BONUS", "STATUTORY BONUS")
     col_fix_total = find_col("FIXED_TOTAL", "FIXED_GROSS", "TOTAL")
 
@@ -275,9 +291,6 @@ if __name__ == "__main__":
     col_earn_tpt = find_col("EARNED_TPT", "EARNED_TPT_ALLOWANCE", "EARNED_TPT ALLOWANCE", "EARNED_TRANSPORT", "EARNED_TRANSPORT ALLOWANCE", "EARNED_TRANSPORT_ALLOWANCE", "EARNED_CONVEYANCE", "EARNED_CONVEYANCE ALLOWANCE")
     if not col_earn_tpt and col_fix_tpt:
         col_earn_tpt = col_fix_tpt
-    col_earn_incentive = find_col("EARNED_INCENTIVE", "EARNED INCENTIVE", "EARNED_INCENTIVES", "EARNED INCENTIVES", "EARNED_INCENTIVE_AMOUNT", "EARNED_INCENTIVE_AMT", "EARNED_PERFORMANCE_INCENTIVE", "EARNED PERFORMANCE INCENTIVE", "EARNED_PRODUCTION_INCENTIVE", "EARNED PRODUCTION INCENTIVE", "EARNED_ATTENDANCE_INCENTIVE", "EARNED ATTENDANCE INCENTIVE", "EARNED_MONTHLY_INCENTIVE", "EARNED MONTHLY INCENTIVE")
-    if not col_earn_incentive and col_fix_incentive:
-        col_earn_incentive = col_fix_incentive
     col_earn_bonus = find_col("EARNED_BONUS", "EARNED_STATUORY BONUS", "EARNED_STATUTORY BONUS")
     col_earn_total = find_col("EARNED_TOTAL", "EARNED_GROSS")
 
@@ -302,11 +315,11 @@ if __name__ == "__main__":
     has_employer_contribution = any([col_er_pf, col_er_esi, col_er_lww, col_er_statu_bonus, col_er_total])
 
     print(f"Has OT columns: {has_ot_col} (Hours: {col_ot_hrs}, Cost: {col_ot_cost})")
+    print(f"Has Incentive column: {has_incentive_col} (Col: {col_incentive})")
     print(f"Has Employer Contribution Section: {has_employer_contribution}")
     print(f"  Earned other allowance col: {col_earn_other}")
     print(f"  Earned special allowance col: {col_earn_special}")
     print(f"  Earned TPT/Transport allowance col: {col_earn_tpt}")
-    print(f"  Earned incentive col: {col_earn_incentive}")
     print(f"  Employer LWW col: {col_er_lww}")
     print(f"  Employer STATU BONUS col: {col_er_statu_bonus}")
 
@@ -355,6 +368,14 @@ if __name__ == "__main__":
             "cost": ot_cost_val
         }
 
+        # Incentive extraction
+        incentive_val = get_numeric_value(row.get(col_incentive)) if col_incentive else 0
+        has_incentive_for_emp = bool(has_incentive_col and (incentive_val > 0 or pd.notna(row.get(col_incentive))))
+        incentive_data = {
+            "has_data": has_incentive_for_emp,
+            "amount": incentive_val
+        }
+
         salary_fixed = {
             "basic": fix_basic_val,
             "da": fix_da_val,
@@ -363,7 +384,6 @@ if __name__ == "__main__":
             "others": get_numeric_value(row.get(col_fix_other)) if col_fix_other else 0,
             "special_allowance": get_numeric_value(row.get(col_fix_special)) if col_fix_special else 0,
             "tpt": get_numeric_value(row.get(col_fix_tpt)) if col_fix_tpt else 0,
-            "incentive": get_numeric_value(row.get(col_fix_incentive)) if col_fix_incentive else 0,
             "bonus": get_numeric_value(row.get(col_fix_bonus)) if col_fix_bonus else 0,
             "total": get_numeric_value(row.get(col_fix_total)) if col_fix_total else 0,
         }
@@ -376,7 +396,6 @@ if __name__ == "__main__":
             "others": get_numeric_value(row.get(col_earn_other)) if col_earn_other else 0,
             "special_allowance": get_numeric_value(row.get(col_earn_special)) if col_earn_special else 0,
             "tpt": get_numeric_value(row.get(col_earn_tpt)) if col_earn_tpt else 0,
-            "incentive": get_numeric_value(row.get(col_earn_incentive)) if col_earn_incentive else 0,
             "bonus": get_numeric_value(row.get(col_earn_bonus)) if col_earn_bonus else 0,
             "total": get_numeric_value(row.get(col_earn_total)) if col_earn_total else 0,
         }
@@ -384,14 +403,12 @@ if __name__ == "__main__":
         if salary_fixed["total"] == 0:
             salary_fixed["total"] = (salary_fixed["basic"] + salary_fixed["da"] + salary_fixed["hra"] +
                                     salary_fixed["leave_wages"] + salary_fixed["others"] +
-                                    salary_fixed["special_allowance"] + salary_fixed["tpt"] +
-                                    salary_fixed["incentive"] + salary_fixed["bonus"])
+                                    salary_fixed["special_allowance"] + salary_fixed["tpt"] + salary_fixed["bonus"])
 
         if salary_earned["total"] == 0:
             salary_earned["total"] = (salary_earned["basic"] + salary_earned["da"] + salary_earned["hra"] +
                                      salary_earned["leave_wages"] + salary_earned["others"] +
-                                     salary_earned["special_allowance"] + salary_earned["tpt"] +
-                                     salary_earned["incentive"] + salary_earned["bonus"])
+                                     salary_earned["special_allowance"] + salary_earned["tpt"] + salary_earned["bonus"])
 
         deduction = {
             "pf": get_numeric_value(row.get(col_ded_pf)) if col_ded_pf else 0,
@@ -405,7 +422,7 @@ if __name__ == "__main__":
         if deduction["total"] == 0:
             deduction["total"] = deduction["pf"] + deduction["esi"] + deduction["pt"] + deduction["adv"] + deduction["lwf"]
 
-        net_pay = get_numeric_value(row.get(col_net_pay)) if col_net_pay else (salary_earned["total"] - deduction["total"])
+        net_pay = get_numeric_value(row.get(col_net_pay)) if col_net_pay else (salary_earned["total"] + ot_cost_val + incentive_val - deduction["total"])
         net_pay_words = number_to_words(net_pay)
 
         # Dynamic earnings items (only included if found in uploaded excel or > 0)
@@ -422,10 +439,8 @@ if __name__ == "__main__":
             earnings_items.append({"name": "Other Allowance", "fixed": salary_fixed["others"], "earned": salary_earned["others"]})
         if col_fix_special or col_earn_special or salary_fixed["special_allowance"] > 0 or salary_earned["special_allowance"] > 0:
             earnings_items.append({"name": "Special Allowance", "fixed": salary_fixed["special_allowance"], "earned": salary_earned["special_allowance"]})
-        if (col_fix_tpt or col_earn_tpt or salary_fixed["tpt"] > 0 or salary_earned["tpt"] > 0) and (col_fix_tpt != col_fix_other and col_earn_tpt != col_earn_other):
+        if col_fix_tpt or col_earn_tpt or salary_fixed["tpt"] > 0 or salary_earned["tpt"] > 0:
             earnings_items.append({"name": "Transport Allowance", "fixed": salary_fixed["tpt"], "earned": salary_earned["tpt"]})
-        if (col_fix_incentive or col_earn_incentive or salary_fixed["incentive"] > 0 or salary_earned["incentive"] > 0) and (col_fix_incentive != col_fix_other and col_earn_incentive != col_earn_other):
-            earnings_items.append({"name": "Incentive", "fixed": salary_fixed["incentive"], "earned": salary_earned["incentive"]})
         if col_fix_bonus or col_earn_bonus or salary_fixed["bonus"] > 0 or salary_earned["bonus"] > 0:
             earnings_items.append({"name": "Bonus", "fixed": salary_fixed["bonus"], "earned": salary_earned["bonus"]})
 
@@ -500,6 +515,8 @@ if __name__ == "__main__":
             employer_contribution=employer_contribution,
             has_ot=has_ot_for_emp,
             ot_data=ot_data,
+            has_incentive=has_incentive_for_emp,
+            incentive_data=incentive_data,
             net_pay=net_pay,
             net_pay_words=net_pay_words,
             month=month,
