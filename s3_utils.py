@@ -126,23 +126,35 @@ def delete_oldest_month():
         )
 
 
-def ensure_storage_limit(limit_gb: float = 9.5):
+_last_storage_check = 0
+
+def ensure_storage_limit(limit_gb: float = 9.5, force: bool = False):
     """
     Check current bucket size and delete oldest months
     until usage is safely below the limit.
+    Cached to run at most once every 30 minutes unless forced.
     """
-    size_bytes = get_bucket_size()
-    size_gb = bytes_to_gb(size_bytes)
+    global _last_storage_check
+    import time
+    now = time.time()
+    if not force and (now - _last_storage_check < 1800):
+        return  # Checked recently, skip expensive bucket pagination
 
-    print(f"Current storage: {size_gb:.3f} GB / {limit_gb} GB limit")
-
-    while size_gb >= limit_gb:
-        print(f"[WARN] Storage at {size_gb:.3f} GB - cleaning oldest month...")
-        delete_oldest_month()
-
+    try:
         size_bytes = get_bucket_size()
         size_gb = bytes_to_gb(size_bytes)
-        print(f"Storage after cleanup: {size_gb:.3f} GB")
+        print(f"Current storage: {size_gb:.3f} GB / {limit_gb} GB limit")
+        _last_storage_check = now
+
+        while size_gb >= limit_gb:
+            print(f"[WARN] Storage at {size_gb:.3f} GB - cleaning oldest month...")
+            delete_oldest_month()
+
+            size_bytes = get_bucket_size()
+            size_gb = bytes_to_gb(size_bytes)
+            print(f"Storage after cleanup: {size_gb:.3f} GB")
+    except Exception as e:
+        print(f"[WARN] Storage limit check failed: {e}")
 
 
 # -------------------------------

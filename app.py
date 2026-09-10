@@ -12,7 +12,13 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from dotenv import load_dotenv
 import io
+import re
+import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from werkzeug.utils import secure_filename
+from jinja2 import Environment, FileSystemLoader
 from whatsapp_utils import send_payslip_whatsapp
+from s3_utils import upload_with_cleanup, list_s3_pdfs, download_s3_file_to_memory
 from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for
 
 # Fix Windows console unicode encoding issues
@@ -22,20 +28,14 @@ try:
 except Exception:
     pass
 
-import re
-import pandas as pd
-from werkzeug.utils import secure_filename
-from jinja2 import Environment, FileSystemLoader
-from s3_utils import upload_with_cleanup, list_s3_pdfs, download_s3_file_to_memory
-
 load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
 
 # ── PATHS ──
 BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR        = "/tmp/uploads"
-PAYSLIPS_BASE_DIR = "/tmp/payslips"
+UPLOAD_DIR        = "/tmp/uploads" if os.name != 'nt' else os.path.join(BASE_DIR, "tmp_uploads")
+PAYSLIPS_BASE_DIR = "/tmp/payslips" if os.name != 'nt' else os.path.join(BASE_DIR, "tmp_payslips")
 TEMPLATE_DIR      = os.path.join(BASE_DIR, "templates")
 LOGO_PATH         = os.path.join(BASE_DIR, "logo.png")
 MAX_SESSIONS      = 2
@@ -45,7 +45,7 @@ os.makedirs(PAYSLIPS_BASE_DIR, exist_ok=True)
 
 # ── GLOBALS ──
 current_session_pdfs = []
-current_output_dir   = PAYSLIPS_BASE_DIR  # safe now
+current_output_dir   = PAYSLIPS_BASE_DIR
 
 # ── SESSION MANAGEMENT ──
 def get_session_dir() -> str:
@@ -68,12 +68,6 @@ def cleanup_old_sessions():
     except Exception as e:
         print(f"Cleanup error: {e}")
 
-TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
-LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-# os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 # Detect wkhtmltopdf path (Docker vs Windows)
 if os.path.exists('/usr/local/bin/wkhtmltopdf'):
     WKHTMLTOPDF_CMD = '/usr/local/bin/wkhtmltopdf'
@@ -95,8 +89,6 @@ EMAIL_CONFIG = {
     "sender_email": os.getenv("SENDER_EMAIL", ""),
     "password": os.getenv("EMAIL_PASSWORD", ""),
 }
-
-current_session_pdfs = []
 
 def get_logo_base64():
     try:
@@ -160,6 +152,16 @@ def format_hours_value(val):
     except:
         return str(val).strip()
 
+def clean_phone_str(raw_val):
+    if pd.isna(raw_val) or raw_val is None:
+        return ""
+    val_str = str(raw_val).strip()
+    if val_str.endswith('.0'):
+        val_str = val_str[:-2]
+    val_str = re.sub(r'\.0+$', '', val_str)
+    digits = re.sub(r'[^\d]', '', val_str)
+    return digits
+
 def number_to_words(num):
     try:
         num = int(float(num))
@@ -213,6 +215,81 @@ def number_to_words(num):
             result += " " + convert_below_thousand(remainder)
     return result.strip() + " rupees only"
 
+def process_single_employee_pdf(task_data):
+    """
+    Renders HTML, executes wkhtmltopdf with speed flags, and uploads to R2.
+    Runs inside ThreadPoolExecutor.
+    """
+    emp_id = task_data["emp_id"]
+    emp_data = task_data["emp_data"]
+    html_content = task_data["html_content"]
+    session_dir = task_data["session_dir"]
+    year = task_data["year"]
+    pay_month = task_data["pay_month"]
+    net_pay = task_data["net_pay"]
+
+    html_path = os.path.join(session_dir, f"{emp_id}.html")
+    pdf_path  = os.path.join(session_dir, f"{emp_id}.pdf")
+
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    # Ultra-fast rendering flags: --disable-javascript, --no-outline, --quiet
+    cmd = [
+        WKHTMLTOPDF_CMD,
+        "--enable-local-file-access",
+        "--page-size", "A4",
+        "--margin-top", "10mm",
+        "--margin-bottom", "10mm",
+        "--margin-left", "10mm",
+        "--margin-right", "10mm",
+        "--disable-javascript",
+        "--no-outline",
+        "--quiet",
+        html_path,
+        pdf_path
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0 or not os.path.exists(pdf_path):
+            print(f"ERROR: wkhtmltopdf failed for {emp_id}: {result.stderr}")
+            return {"success": False, "emp_id": emp_id, "error": result.stderr or "PDF not created"}
+
+        # Upload to R2
+        s3_key = None
+        try:
+            emp_name = emp_data["name"]
+            unit_name = emp_data["unit_name"] or "NoUnit"
+            s3_key = upload_with_cleanup(
+                local_path=pdf_path,
+                employee_name=emp_name,
+                unit_name=unit_name,
+                month=pay_month,
+                year=year
+            )
+            print(f"[OK] Uploaded to R2: {s3_key}")
+        except Exception as s3_error:
+            print(f"[ERROR] R2 upload failed for {emp_id}: {s3_error}")
+
+        preview_item = {
+            "EMP_ID": emp_id,
+            "Name": emp_data["name"],
+            "Designation": emp_data["designation"],
+            "Email": emp_data["email"],
+            "Phone": emp_data["phone"],
+            "Net_Pay": net_pay,
+            "PDF_Path": pdf_path
+        }
+        return {"success": True, "emp_id": emp_id, "preview": preview_item, "s3_key": s3_key}
+
+    except subprocess.TimeoutExpired:
+        print(f"ERROR: Timeout generating PDF for {emp_id}")
+        return {"success": False, "emp_id": emp_id, "error": "Timeout generating PDF"}
+    except Exception as e:
+        print(f"ERROR: Exception processing {emp_id}: {e}")
+        return {"success": False, "emp_id": emp_id, "error": str(e)}
+
 @app.route("/upload", methods=["POST"])
 def upload_file():
     if not session.get("logged_in"):
@@ -220,7 +297,6 @@ def upload_file():
     global current_session_pdfs, current_output_dir
     current_session_pdfs = []
 
-# Clean old sessions first, then create new one
     cleanup_old_sessions()
     current_output_dir = get_session_dir()
     print(f"Session directory: {current_output_dir}")
@@ -335,8 +411,25 @@ def upload_file():
         col_doj = find_col("DOJ", "DATE OF JOINING")
         col_bank_ac = find_col("BANK_AC", "BANK A/C", "BANK AC", "ACCOUNT", "ACCOUNT NO")
         col_ifsc = find_col("IFSC_CODE", "IFSC CODE", "IFSC")
-        col_phone = find_col("Phone", "phone no", "NAME_CONTACT", "MOBILE", "CONTACT")
-        col_email = find_col("Email", "EMAIL")
+        
+        # Phone fuzzy detection (handles merged headers like 'OT COST_phone no')
+        col_phone = find_col("Phone", "phone no", "NAME_CONTACT", "MOBILE", "CONTACT", "Mobile No", "Phone No", "Contact No")
+        if not col_phone:
+            for c in df.columns:
+                c_low = str(c).strip().lower()
+                if any(term in c_low for term in ['phone', 'mobile', 'contact', 'cell', 'whatsapp']):
+                    col_phone = c
+                    break
+
+        # Email fuzzy detection (handles merged headers like 'OT COST_EMAIL')
+        col_email = find_col("Email", "EMAIL", "mail", "mail_id", "email_id")
+        if not col_email:
+            for c in df.columns:
+                c_low = str(c).strip().lower()
+                if any(term in c_low for term in ['email', 'e_mail', 'mail_id', 'mail']):
+                    col_email = c
+                    break
+
         col_basic_days = find_col("BASIC_DAYS", "Basic Days", "TOTAL DAYS")
         col_actual_days = find_col("ACTUAL_DAYS", "Actual Days", "DAYS WORKED")
 
@@ -425,295 +518,247 @@ def upload_file():
         print(f"Loaded {len(df)} employees from file")
         print(f"Has OT columns: {has_ot_col} (Hours: {col_ot_hrs}, Cost: {col_ot_cost})")
         print(f"Has Incentive column: {has_incentive_col} (Col: {col_incentive})")
+        print(f"Has Phone column: {bool(col_phone)} (Col: {col_phone})")
+        print(f"Has Email column: {bool(col_email)} (Col: {col_email})")
         print(f"Has Employer Contribution Section: {has_employer_contribution}")
-        print(f"  Earned other allowance col: {col_earn_other}")
-        print(f"  Earned special allowance col: {col_earn_special}")
-        print(f"  Earned TPT/Transport allowance col: {col_earn_tpt}")
-        print(f"  Employer LWW col: {col_er_lww}")
-        print(f"  Employer STATU BONUS col: {col_er_statu_bonus}")
         
         env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
         template = env.get_template("payslip.html")
         logo_base64 = get_logo_base64()
 
+        tasks = []
+
+        for index, row in df.iterrows():
+            name_val = row.get(col_name) if col_name else ""
+            if pd.isna(name_val) or str(name_val).strip() == "" or str(name_val).strip().lower() in ['total', 'totals', 'grand total']:
+                continue
+
+            emp_id_val = row.get(col_emp_id) if col_emp_id else f"EMP{index+1}"
+            emp_id = str(int(float(emp_id_val))) if str(emp_id_val).replace('.0','').isdigit() else str(emp_id_val).strip()
+            
+            pay_month = month
+
+            # Fixed basic / DA handling
+            if col_fix_basic_da:
+                fix_basic_label = "Basic & DA"
+                fix_basic_val = get_numeric_value(row.get(col_fix_basic_da))
+                fix_da_val = 0
+                has_da_row = False
+            else:
+                fix_basic_label = "Basic"
+                fix_basic_val = get_numeric_value(row.get(col_fix_basic)) if col_fix_basic else 0
+                fix_da_val = get_numeric_value(row.get(col_fix_da)) if col_fix_da else 0
+                has_da_row = bool(col_fix_da or col_earn_da)
+
+            # Earned basic / DA handling
+            if col_earn_basic_da:
+                earn_basic_val = get_numeric_value(row.get(col_earn_basic_da))
+                earn_da_val = 0
+            else:
+                earn_basic_val = get_numeric_value(row.get(col_earn_basic)) if col_earn_basic else 0
+                earn_da_val = get_numeric_value(row.get(col_earn_da)) if col_earn_da else 0
+
+            # OT extraction
+            ot_hrs_str = format_hours_value(row.get(col_ot_hrs)) if col_ot_hrs else "0"
+            ot_cost_val = get_numeric_value(row.get(col_ot_cost)) if col_ot_cost else 0
+            has_ot_for_emp = bool(has_ot_col or ot_cost_val > 0 or (col_ot_hrs and ot_hrs_str not in ["0", ""]))
+            ot_data = {
+                "has_data": has_ot_for_emp,
+                "hrs": ot_hrs_str,
+                "cost": ot_cost_val
+            }
+
+            # Incentive extraction
+            incentive_val = get_numeric_value(row.get(col_incentive)) if col_incentive else 0
+            has_incentive_for_emp = bool(has_incentive_col and (incentive_val > 0 or pd.notna(row.get(col_incentive))))
+            incentive_data = {
+                "has_data": has_incentive_for_emp,
+                "amount": incentive_val
+            }
+
+            salary_fixed = {
+                "basic": fix_basic_val,
+                "da": fix_da_val,
+                "hra": get_numeric_value(row.get(col_fix_hra)) if col_fix_hra else 0,
+                "leave_wages": get_numeric_value(row.get(col_fix_leave)) if col_fix_leave else 0,
+                "others": get_numeric_value(row.get(col_fix_other)) if col_fix_other else 0,
+                "special_allowance": get_numeric_value(row.get(col_fix_special)) if col_fix_special else 0,
+                "tpt": get_numeric_value(row.get(col_fix_tpt)) if col_fix_tpt else 0,
+                "bonus": get_numeric_value(row.get(col_fix_bonus)) if col_fix_bonus else 0,
+                "total": get_numeric_value(row.get(col_fix_total)) if col_fix_total else 0,
+            }
+
+            salary_earned = {
+                "basic": earn_basic_val,
+                "da": earn_da_val,
+                "hra": get_numeric_value(row.get(col_earn_hra)) if col_earn_hra else 0,
+                "leave_wages": get_numeric_value(row.get(col_earn_leave)) if col_earn_leave else 0,
+                "others": get_numeric_value(row.get(col_earn_other)) if col_earn_other else 0,
+                "special_allowance": get_numeric_value(row.get(col_earn_special)) if col_earn_special else 0,
+                "tpt": get_numeric_value(row.get(col_earn_tpt)) if col_earn_tpt else 0,
+                "bonus": get_numeric_value(row.get(col_earn_bonus)) if col_earn_bonus else 0,
+                "total": get_numeric_value(row.get(col_earn_total)) if col_earn_total else 0,
+            }
+
+            # Calculate totals if not present
+            if salary_fixed["total"] == 0:
+                salary_fixed["total"] = (salary_fixed["basic"] + salary_fixed["da"] + salary_fixed["hra"] +
+                                        salary_fixed["leave_wages"] + salary_fixed["others"] +
+                                        salary_fixed["special_allowance"] + salary_fixed["tpt"] + salary_fixed["bonus"])
+
+            if salary_earned["total"] == 0:
+                salary_earned["total"] = (salary_earned["basic"] + salary_earned["da"] + salary_earned["hra"] +
+                                         salary_earned["leave_wages"] + salary_earned["others"] +
+                                         salary_earned["special_allowance"] + salary_earned["tpt"] + salary_earned["bonus"])
+
+            deduction = {
+                "pf": get_numeric_value(row.get(col_ded_pf)) if col_ded_pf else 0,
+                "esi": get_numeric_value(row.get(col_ded_esi)) if col_ded_esi else 0,
+                "pt": get_numeric_value(row.get(col_ded_pt)) if col_ded_pt else 0,
+                "adv": get_numeric_value(row.get(col_ded_adv)) if col_ded_adv else 0,
+                "lwf": get_numeric_value(row.get(col_ded_lwf)) if col_ded_lwf else 0,
+                "total": get_numeric_value(row.get(col_ded_total)) if col_ded_total else 0,
+            }
+
+            if deduction["total"] == 0:
+                deduction["total"] = deduction["pf"] + deduction["esi"] + deduction["pt"] + deduction["adv"] + deduction["lwf"]
+
+            net_pay = get_numeric_value(row.get(col_net_pay)) if col_net_pay else (salary_earned["total"] + ot_cost_val + incentive_val - deduction["total"])
+            net_pay_words = number_to_words(net_pay)
+
+            # Dynamic earnings items
+            earnings_items = [
+                {"name": fix_basic_label, "fixed": salary_fixed["basic"], "earned": salary_earned["basic"]}
+            ]
+            if has_da_row:
+                earnings_items.append({"name": "DA", "fixed": salary_fixed["da"], "earned": salary_earned["da"]})
+            if col_fix_hra or col_earn_hra or salary_fixed["hra"] > 0 or salary_earned["hra"] > 0:
+                earnings_items.append({"name": "HRA", "fixed": salary_fixed["hra"], "earned": salary_earned["hra"]})
+            if col_fix_leave or col_earn_leave or salary_fixed["leave_wages"] > 0 or salary_earned["leave_wages"] > 0:
+                earnings_items.append({"name": "Leave with wages", "fixed": salary_fixed["leave_wages"], "earned": salary_earned["leave_wages"]})
+            if col_fix_other or col_earn_other or salary_fixed["others"] > 0 or salary_earned["others"] > 0:
+                earnings_items.append({"name": "Other Allowance", "fixed": salary_fixed["others"], "earned": salary_earned["others"]})
+            if col_fix_special or col_earn_special or salary_fixed["special_allowance"] > 0 or salary_earned["special_allowance"] > 0:
+                earnings_items.append({"name": "Special Allowance", "fixed": salary_fixed["special_allowance"], "earned": salary_earned["special_allowance"]})
+            if col_fix_tpt or col_earn_tpt or salary_fixed["tpt"] > 0 or salary_earned["tpt"] > 0:
+                earnings_items.append({"name": "Transport Allowance", "fixed": salary_fixed["tpt"], "earned": salary_earned["tpt"]})
+            if col_fix_bonus or col_earn_bonus or salary_fixed["bonus"] > 0 or salary_earned["bonus"] > 0:
+                earnings_items.append({"name": "Bonus", "fixed": salary_fixed["bonus"], "earned": salary_earned["bonus"]})
+
+            # Dynamic deductions items
+            deductions_items = [
+                {"name": "Provident Fund", "amount": deduction["pf"]},
+                {"name": "ESI", "amount": deduction["esi"]},
+                {"name": "Professional Tax", "amount": deduction["pt"]},
+            ]
+            if col_ded_adv or deduction["adv"] > 0:
+                deductions_items.append({"name": "ADV", "amount": deduction["adv"]})
+            if col_ded_lwf or deduction["lwf"] > 0:
+                deductions_items.append({"name": "LWF", "amount": deduction["lwf"]})
+
+            # Pair earnings and deductions rows for balanced table
+            max_rows = max(len(earnings_items), len(deductions_items))
+            salary_rows = []
+            for i in range(max_rows):
+                salary_rows.append({
+                    "earning": earnings_items[i] if i < len(earnings_items) else None,
+                    "deduction": deductions_items[i] if i < len(deductions_items) else None,
+                })
+
+            # Employer Contribution values
+            er_pf_val = get_numeric_value(row.get(col_er_pf)) if col_er_pf else 0
+            er_esi_val = get_numeric_value(row.get(col_er_esi)) if col_er_esi else 0
+            er_lww_val = get_numeric_value(row.get(col_er_lww)) if col_er_lww else 0
+            er_statu_bonus_val = get_numeric_value(row.get(col_er_statu_bonus)) if col_er_statu_bonus else 0
+            er_total_val = get_numeric_value(row.get(col_er_total)) if col_er_total else (er_pf_val + er_esi_val + er_lww_val + er_statu_bonus_val)
+
+            has_employer_data = has_employer_contribution and (er_total_val > 0 or any([col_er_pf, col_er_esi, col_er_lww, col_er_statu_bonus]))
+
+            employer_contribution = {
+                "has_data": has_employer_data,
+                "has_pf": bool(col_er_pf and (er_pf_val > 0 or has_employer_contribution)),
+                "pf": er_pf_val,
+                "has_esi": bool(col_er_esi and (er_esi_val > 0 or has_employer_contribution)),
+                "esi": er_esi_val,
+                "has_lww": bool(col_er_lww and (er_lww_val > 0 or has_employer_contribution)),
+                "lww": er_lww_val,
+                "has_statu_bonus": bool(col_er_statu_bonus and (er_statu_bonus_val > 0 or has_employer_contribution)),
+                "statu_bonus": er_statu_bonus_val,
+                "has_total": bool(col_er_total or (has_employer_data and er_total_val > 0)),
+                "total": er_total_val,
+            }
+
+            emp_data = {
+                "emp_id": emp_id,
+                "name": str(name_val).strip(),
+                "designation": str(row.get(col_designation, "")).strip() if col_designation and pd.notna(row.get(col_designation)) else "",
+                "unit_name": str(row.get(col_unit, "")).strip() if col_unit and pd.notna(row.get(col_unit)) else "",
+                "uan": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_uan, "")) if col_uan and pd.notna(row.get(col_uan)) else "",
+                "esi": str(row.get(col_esi_no, "")).strip() if col_esi_no and pd.notna(row.get(col_esi_no)) else "",
+                "doj": str(row.get(col_doj, "")).strip() if col_doj and pd.notna(row.get(col_doj)) else "",
+                "bank_ac": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_bank_ac, "")) if col_bank_ac and pd.notna(row.get(col_bank_ac)) else "",
+                "ifsc": str(row.get(col_ifsc, "")).strip() if col_ifsc and pd.notna(row.get(col_ifsc)) else "",
+                "email": str(row.get(col_email, "")).strip() if col_email and pd.notna(row.get(col_email)) else "",
+                "phone": clean_phone_str(row.get(col_phone)) if col_phone else "",
+                "basic_days": str(int(float(row.get(col_basic_days, 31)))) if col_basic_days and pd.notna(row.get(col_basic_days)) else "31",
+                "actual_days": str(int(float(row.get(col_actual_days, 31)))) if col_actual_days and pd.notna(row.get(col_actual_days)) else "31",
+            }
+
+            html_content = template.render(
+                company=COMPANY, emp=emp_data, salary_fixed=salary_fixed,
+                salary_earned=salary_earned, deduction=deduction,
+                salary_rows=salary_rows,
+                has_employer_contribution=has_employer_contribution,
+                employer_contribution=employer_contribution,
+                has_ot=has_ot_for_emp,
+                ot_data=ot_data,
+                has_incentive=has_incentive_for_emp,
+                incentive_data=incentive_data,
+                net_pay=net_pay, net_pay_words=net_pay_words, month=pay_month,
+                generated_on=datetime.now().strftime("%d %b %Y"), logo_base64=logo_base64
+            )
+
+            tasks.append({
+                "emp_id": emp_id,
+                "emp_data": emp_data,
+                "html_content": html_content,
+                "session_dir": current_output_dir,
+                "year": year,
+                "pay_month": pay_month,
+                "net_pay": net_pay
+            })
+
+        print(f"Executing parallel PDF generation for {len(tasks)} employees...")
         preview = []
         success_count = 0
         error_count = 0
-        missing_columns = set()
 
-        for index, row in df.iterrows():
-            try:
-                name_val = row.get(col_name) if col_name else ""
-                if pd.isna(name_val) or str(name_val).strip() == "" or str(name_val).strip().lower() in ['total', 'totals', 'grand total']:
-                    print(f"Skipping row {index+1} (empty name or summary row)")
-                    continue
-
-                emp_id_val = row.get(col_emp_id) if col_emp_id else f"EMP{index+1}"
-                emp_id = str(int(float(emp_id_val))) if str(emp_id_val).replace('.0','').isdigit() else str(emp_id_val).strip()
-                
-                pay_month = month
-                print(f"Processing employee {emp_id} - {name_val}...")
-
-                # Fixed basic / DA handling
-                if col_fix_basic_da:
-                    fix_basic_label = "Basic & DA"
-                    fix_basic_val = get_numeric_value(row.get(col_fix_basic_da))
-                    fix_da_val = 0
-                    has_da_row = False
+        # Run parallel PDF generation with ThreadPoolExecutor
+        max_workers = min(4, os.cpu_count() or 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_emp = {executor.submit(process_single_employee_pdf, t): t["emp_id"] for t in tasks}
+            for future in as_completed(future_to_emp):
+                res = future.result()
+                if res.get("success"):
+                    success_count += 1
+                    preview.append(res["preview"])
+                    if res.get("s3_key"):
+                        current_session_pdfs.append(res["s3_key"])
                 else:
-                    fix_basic_label = "Basic"
-                    fix_basic_val = get_numeric_value(row.get(col_fix_basic)) if col_fix_basic else 0
-                    fix_da_val = get_numeric_value(row.get(col_fix_da)) if col_fix_da else 0
-                    has_da_row = bool(col_fix_da or col_earn_da)
-
-                # Earned basic / DA handling
-                if col_earn_basic_da:
-                    earn_basic_val = get_numeric_value(row.get(col_earn_basic_da))
-                    earn_da_val = 0
-                else:
-                    earn_basic_val = get_numeric_value(row.get(col_earn_basic)) if col_earn_basic else 0
-                    earn_da_val = get_numeric_value(row.get(col_earn_da)) if col_earn_da else 0
-
-                # OT extraction
-                ot_hrs_str = format_hours_value(row.get(col_ot_hrs)) if col_ot_hrs else "0"
-                ot_cost_val = get_numeric_value(row.get(col_ot_cost)) if col_ot_cost else 0
-                has_ot_for_emp = bool(has_ot_col or ot_cost_val > 0 or (col_ot_hrs and ot_hrs_str not in ["0", ""]))
-                ot_data = {
-                    "has_data": has_ot_for_emp,
-                    "hrs": ot_hrs_str,
-                    "cost": ot_cost_val
-                }
-
-                # Incentive extraction
-                incentive_val = get_numeric_value(row.get(col_incentive)) if col_incentive else 0
-                has_incentive_for_emp = bool(has_incentive_col and (incentive_val > 0 or pd.notna(row.get(col_incentive))))
-                incentive_data = {
-                    "has_data": has_incentive_for_emp,
-                    "amount": incentive_val
-                }
-
-                salary_fixed = {
-                    "basic": fix_basic_val,
-                    "da": fix_da_val,
-                    "hra": get_numeric_value(row.get(col_fix_hra)) if col_fix_hra else 0,
-                    "leave_wages": get_numeric_value(row.get(col_fix_leave)) if col_fix_leave else 0,
-                    "others": get_numeric_value(row.get(col_fix_other)) if col_fix_other else 0,
-                    "special_allowance": get_numeric_value(row.get(col_fix_special)) if col_fix_special else 0,
-                    "tpt": get_numeric_value(row.get(col_fix_tpt)) if col_fix_tpt else 0,
-                    "bonus": get_numeric_value(row.get(col_fix_bonus)) if col_fix_bonus else 0,
-                    "total": get_numeric_value(row.get(col_fix_total)) if col_fix_total else 0,
-                }
-
-                salary_earned = {
-                    "basic": earn_basic_val,
-                    "da": earn_da_val,
-                    "hra": get_numeric_value(row.get(col_earn_hra)) if col_earn_hra else 0,
-                    "leave_wages": get_numeric_value(row.get(col_earn_leave)) if col_earn_leave else 0,
-                    "others": get_numeric_value(row.get(col_earn_other)) if col_earn_other else 0,
-                    "special_allowance": get_numeric_value(row.get(col_earn_special)) if col_earn_special else 0,
-                    "tpt": get_numeric_value(row.get(col_earn_tpt)) if col_earn_tpt else 0,
-                    "bonus": get_numeric_value(row.get(col_earn_bonus)) if col_earn_bonus else 0,
-                    "total": get_numeric_value(row.get(col_earn_total)) if col_earn_total else 0,
-                }
-
-                # Calculate totals if not present
-                if salary_fixed["total"] == 0:
-                    salary_fixed["total"] = (salary_fixed["basic"] + salary_fixed["da"] + salary_fixed["hra"] +
-                                            salary_fixed["leave_wages"] + salary_fixed["others"] +
-                                            salary_fixed["special_allowance"] + salary_fixed["tpt"] + salary_fixed["bonus"])
-
-                if salary_earned["total"] == 0:
-                    salary_earned["total"] = (salary_earned["basic"] + salary_earned["da"] + salary_earned["hra"] +
-                                             salary_earned["leave_wages"] + salary_earned["others"] +
-                                             salary_earned["special_allowance"] + salary_earned["tpt"] + salary_earned["bonus"])
-
-                deduction = {
-                    "pf": get_numeric_value(row.get(col_ded_pf)) if col_ded_pf else 0,
-                    "esi": get_numeric_value(row.get(col_ded_esi)) if col_ded_esi else 0,
-                    "pt": get_numeric_value(row.get(col_ded_pt)) if col_ded_pt else 0,
-                    "adv": get_numeric_value(row.get(col_ded_adv)) if col_ded_adv else 0,
-                    "lwf": get_numeric_value(row.get(col_ded_lwf)) if col_ded_lwf else 0,
-                    "total": get_numeric_value(row.get(col_ded_total)) if col_ded_total else 0,
-                }
-
-                if deduction["total"] == 0:
-                    deduction["total"] = deduction["pf"] + deduction["esi"] + deduction["pt"] + deduction["adv"] + deduction["lwf"]
-
-                net_pay = get_numeric_value(row.get(col_net_pay)) if col_net_pay else (salary_earned["total"] + ot_cost_val + incentive_val - deduction["total"])
-                net_pay_words = number_to_words(net_pay)
-
-                # Dynamic earnings items (only included if found in uploaded excel or > 0)
-                earnings_items = [
-                    {"name": fix_basic_label, "fixed": salary_fixed["basic"], "earned": salary_earned["basic"]}
-                ]
-                if has_da_row:
-                    earnings_items.append({"name": "DA", "fixed": salary_fixed["da"], "earned": salary_earned["da"]})
-                if col_fix_hra or col_earn_hra or salary_fixed["hra"] > 0 or salary_earned["hra"] > 0:
-                    earnings_items.append({"name": "HRA", "fixed": salary_fixed["hra"], "earned": salary_earned["hra"]})
-                if col_fix_leave or col_earn_leave or salary_fixed["leave_wages"] > 0 or salary_earned["leave_wages"] > 0:
-                    earnings_items.append({"name": "Leave with wages", "fixed": salary_fixed["leave_wages"], "earned": salary_earned["leave_wages"]})
-                if col_fix_other or col_earn_other or salary_fixed["others"] > 0 or salary_earned["others"] > 0:
-                    earnings_items.append({"name": "Other Allowance", "fixed": salary_fixed["others"], "earned": salary_earned["others"]})
-                if col_fix_special or col_earn_special or salary_fixed["special_allowance"] > 0 or salary_earned["special_allowance"] > 0:
-                    earnings_items.append({"name": "Special Allowance", "fixed": salary_fixed["special_allowance"], "earned": salary_earned["special_allowance"]})
-                if col_fix_tpt or col_earn_tpt or salary_fixed["tpt"] > 0 or salary_earned["tpt"] > 0:
-                    earnings_items.append({"name": "Transport Allowance", "fixed": salary_fixed["tpt"], "earned": salary_earned["tpt"]})
-                if col_fix_bonus or col_earn_bonus or salary_fixed["bonus"] > 0 or salary_earned["bonus"] > 0:
-                    earnings_items.append({"name": "Bonus", "fixed": salary_fixed["bonus"], "earned": salary_earned["bonus"]})
-
-                # Dynamic deductions items
-                deductions_items = [
-                    {"name": "Provident Fund", "amount": deduction["pf"]},
-                    {"name": "ESI", "amount": deduction["esi"]},
-                    {"name": "Professional Tax", "amount": deduction["pt"]},
-                ]
-                if col_ded_adv or deduction["adv"] > 0:
-                    deductions_items.append({"name": "ADV", "amount": deduction["adv"]})
-                if col_ded_lwf or deduction["lwf"] > 0:
-                    deductions_items.append({"name": "LWF", "amount": deduction["lwf"]})
-
-                # Pair earnings and deductions rows for balanced table
-                max_rows = max(len(earnings_items), len(deductions_items))
-                salary_rows = []
-                for i in range(max_rows):
-                    salary_rows.append({
-                        "earning": earnings_items[i] if i < len(earnings_items) else None,
-                        "deduction": deductions_items[i] if i < len(deductions_items) else None,
-                    })
-
-                # Employer Contribution values
-                er_pf_val = get_numeric_value(row.get(col_er_pf)) if col_er_pf else 0
-                er_esi_val = get_numeric_value(row.get(col_er_esi)) if col_er_esi else 0
-                er_lww_val = get_numeric_value(row.get(col_er_lww)) if col_er_lww else 0
-                er_statu_bonus_val = get_numeric_value(row.get(col_er_statu_bonus)) if col_er_statu_bonus else 0
-                er_total_val = get_numeric_value(row.get(col_er_total)) if col_er_total else (er_pf_val + er_esi_val + er_lww_val + er_statu_bonus_val)
-
-                has_employer_data = has_employer_contribution and (er_total_val > 0 or any([col_er_pf, col_er_esi, col_er_lww, col_er_statu_bonus]))
-
-                employer_contribution = {
-                    "has_data": has_employer_data,
-                    "has_pf": bool(col_er_pf and (er_pf_val > 0 or has_employer_contribution)),
-                    "pf": er_pf_val,
-                    "has_esi": bool(col_er_esi and (er_esi_val > 0 or has_employer_contribution)),
-                    "esi": er_esi_val,
-                    "has_lww": bool(col_er_lww and (er_lww_val > 0 or has_employer_contribution)),
-                    "lww": er_lww_val,
-                    "has_statu_bonus": bool(col_er_statu_bonus and (er_statu_bonus_val > 0 or has_employer_contribution)),
-                    "statu_bonus": er_statu_bonus_val,
-                    "has_total": bool(col_er_total or (has_employer_data and er_total_val > 0)),
-                    "total": er_total_val,
-                }
-
-                emp_data = {
-                    "emp_id": emp_id,
-                    "name": str(name_val).strip(),
-                    "designation": str(row.get(col_designation, "")).strip() if col_designation and pd.notna(row.get(col_designation)) else "",
-                    "unit_name": str(row.get(col_unit, "")).strip() if col_unit and pd.notna(row.get(col_unit)) else "",
-                    "uan": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_uan, "")) if col_uan and pd.notna(row.get(col_uan)) else "",
-                    "esi": str(row.get(col_esi_no, "")).strip() if col_esi_no and pd.notna(row.get(col_esi_no)) else "",
-                    "doj": str(row.get(col_doj, "")).strip() if col_doj and pd.notna(row.get(col_doj)) else "",
-                    "bank_ac": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_bank_ac, "")) if col_bank_ac and pd.notna(row.get(col_bank_ac)) else "",
-                    "ifsc": str(row.get(col_ifsc, "")).strip() if col_ifsc and pd.notna(row.get(col_ifsc)) else "",
-                    "email": str(row.get(col_email, "")).strip() if col_email and pd.notna(row.get(col_email)) else "",
-                    "phone": str(int(float(row.get(col_phone, 0)))).strip() 
-                             if col_phone and pd.notna(row.get(col_phone)) 
-                             and str(row.get(col_phone, "")).strip() not in ["", "nan", "0"] 
-                             else "",
-                    "basic_days": str(int(float(row.get(col_basic_days, 31)))) if col_basic_days and pd.notna(row.get(col_basic_days)) else "31",
-                    "actual_days": str(int(float(row.get(col_actual_days, 31)))) if col_actual_days and pd.notna(row.get(col_actual_days)) else "31",
-                }
-
-                html_content = template.render(
-                    company=COMPANY, emp=emp_data, salary_fixed=salary_fixed,
-                    salary_earned=salary_earned, deduction=deduction,
-                    salary_rows=salary_rows,
-                    has_employer_contribution=has_employer_contribution,
-                    employer_contribution=employer_contribution,
-                    has_ot=has_ot_for_emp,
-                    ot_data=ot_data,
-                    has_incentive=has_incentive_for_emp,
-                    incentive_data=incentive_data,
-                    net_pay=net_pay, net_pay_words=net_pay_words, month=pay_month,
-                    generated_on=datetime.now().strftime("%d %b %Y"), logo_base64=logo_base64
-                )
-
-                html_path = os.path.join(current_output_dir, f"{emp_id}.html")
-                pdf_path  = os.path.join(current_output_dir, f"{emp_id}.pdf")
-
-                with open(html_path, "w", encoding="utf-8") as f:
-                    f.write(html_content)
-
-                result = subprocess.run([WKHTMLTOPDF_CMD, "--enable-local-file-access", "--page-size", "A4",
-                    "--margin-top", "10mm", "--margin-bottom", "10mm", "--margin-left", "10mm",
-                    "--margin-right", "10mm", html_path, pdf_path], capture_output=True, text=True, timeout=30)
-
-                if result.returncode != 0:
-                    print(f"ERROR: wkhtmltopdf failed for {emp_id}")
-                    print(f"STDOUT: {result.stdout}")
-                    print(f"STDERR: {result.stderr}")
                     error_count += 1
-                    continue
-                    
-                if not os.path.exists(pdf_path):
-                    print(f"ERROR: PDF not created for {emp_id}")
-                    error_count += 1
-                    continue
 
-                # Upload to R2
-                try:
-                    emp_name = emp_data["name"]
-                    unit_name = emp_data["unit_name"] or "NoUnit"
-                    print(f"DEBUG: Uploading to R2 -> {year}/{pay_month}/{emp_name}_{unit_name}.pdf")
-                    s3_key = upload_with_cleanup(
-                        local_path=pdf_path,
-                        employee_name=emp_name,
-                        unit_name=unit_name,
-                        month=pay_month,
-                        year=year
-                    )
-                    print(f"[OK] Uploaded to R2: {s3_key}")
-                    current_session_pdfs.append(s3_key)
-                except Exception as s3_error:
-                    print(f"[ERROR] R2 upload failed for {emp_id}: {s3_error}")
-                    traceback.print_exc()
+        # Preserve original row ordering in preview
+        emp_order = {t["emp_id"]: i for i, t in enumerate(tasks)}
+        preview.sort(key=lambda p: emp_order.get(p["EMP_ID"], 999999))
 
-                preview.append({"EMP_ID": emp_id, "Name": emp_data["name"], "Designation": emp_data["designation"],
-                    "Email": emp_data["email"], "Phone": emp_data["phone"],"Net_Pay": net_pay, "PDF_Path": pdf_path})
-                success_count += 1
-
-            except subprocess.TimeoutExpired:
-                print(f"ERROR: Timeout for employee {emp_id}")
-                error_count += 1
-                continue
-            except Exception as emp_error:
-                print(f"ERROR processing {emp_id}: {str(emp_error)}")
-                print(f"Traceback: {traceback.format_exc()}")
-                error_count += 1
-                continue
-
-        print(f"\nGENERATION COMPLETE - Success: {success_count}/{len(df)}, Errors: {error_count}/{len(df)}\n")
+        print(f"\nGENERATION COMPLETE - Success: {success_count}/{len(tasks)}, Errors: {error_count}/{len(tasks)}\n")
 
         if success_count == 0:
-            error_msg = "No payslips generated.\n\n"
-            if missing_columns:
-                missing_list = sorted(list(missing_columns))
-                error_msg += f"Missing columns in your Excel: {', '.join(missing_list)}\n\n"
-                error_msg += "Please add these columns and try again."
-            else:
-                error_msg += "All rows were skipped. Check if your Excel has data."
-            return jsonify({"error": error_msg}), 500
-        
-        # Show missing columns warning to user
-        warning_msg = ""
-        if missing_columns:
-            missing_list = sorted(list(missing_columns))
-            warning_msg = f"Warning: The following columns were not found in your Excel file: {', '.join(missing_list)}. These fields will be empty in the payslips."
-            print(f"\n{warning_msg}\n")
+            return jsonify({"error": "No payslips could be generated. Check Excel file format."}), 500
 
         return jsonify({
             "message": f"Generated {success_count} payslip(s)", 
-            "preview": preview,
-            "warning": warning_msg if missing_columns else None
+            "preview": preview
         })
 
     except Exception as e:
@@ -742,14 +787,14 @@ def send_emails():
 
             if not emp_email or not pdf_path:
                 failed_count += 1
-                results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "Missing data"})
+                results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "Missing email or PDF"})
                 continue
 
             if not os.path.exists(pdf_path):
                 pdf_path = os.path.join(current_output_dir, f"{emp_id}.pdf")
                 if not os.path.exists(pdf_path):
                     failed_count += 1
-                    results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "PDF not found"})
+                    results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "PDF not found on server"})
                     continue
 
             success = send_email(emp_email, emp_name, pdf_path, month)
@@ -758,7 +803,7 @@ def send_emails():
                 results.append({"EMP_ID": emp_id, "Status": "Sent", "Email": emp_email})
             else:
                 failed_count += 1
-                results.append({"EMP_ID": emp_id, "Status": "Failed", "Email": emp_email})
+                results.append({"EMP_ID": emp_id, "Status": "Failed", "Email": emp_email, "Reason": "SMTP error"})
 
         return jsonify({"message": f"Sent {sent_count}, failed {failed_count}", "sent_count": sent_count,
             "failed_count": failed_count, "results": results})
@@ -768,15 +813,30 @@ def send_emails():
 
 @app.route("/download-current", methods=["GET"])
 def download_current_session():
+    """
+    Ultra-fast current session download:
+    Zips files directly from local session directory on disk.
+    Falls back to S3 only if local files are missing.
+    """
     try:
-        if not current_session_pdfs:
+        if not current_session_pdfs and not (current_output_dir and os.path.exists(current_output_dir)):
             return jsonify({"error": "No PDFs in current session"}), 404
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for s3_key in current_session_pdfs:
-                pdf_data = download_s3_file_to_memory(s3_key)
-                zipf.writestr(os.path.basename(s3_key), pdf_data.read())
+            local_pdfs = []
+            if current_output_dir and os.path.exists(current_output_dir):
+                local_pdfs = [f for f in os.listdir(current_output_dir) if f.lower().endswith('.pdf')]
+
+            if local_pdfs:
+                for pdf_file in local_pdfs:
+                    full_local_path = os.path.join(current_output_dir, pdf_file)
+                    zipf.write(full_local_path, arcname=pdf_file)
+            else:
+                # Fallback to S3
+                for s3_key in current_session_pdfs:
+                    pdf_data = download_s3_file_to_memory(s3_key)
+                    zipf.writestr(os.path.basename(s3_key), pdf_data.read())
 
         zip_buffer.seek(0)
         return send_file(zip_buffer, mimetype='application/zip', as_attachment=True, download_name='current_payslips.zip')
@@ -800,12 +860,13 @@ def send_whatsapp():
         for emp in employees:
             emp_name = emp.get("Name")
             emp_id = emp.get("EMP_ID")
-            phone = emp.get("Phone")  # must exist in your Excel as Phone column
+            phone = emp.get("Phone")
             pdf_path = emp.get("PDF_Path")
 
             if not phone or not pdf_path:
                 failed_count += 1
-                results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "Missing phone or PDF"})
+                reason = "Missing phone number in Excel" if not phone else "Missing PDF path"
+                results.append({"EMP_ID": emp_id, "Status": "Failed", "Phone": phone or "", "Reason": reason})
                 continue
 
             if not os.path.exists(pdf_path):
@@ -813,7 +874,7 @@ def send_whatsapp():
 
             if not os.path.exists(pdf_path):
                 failed_count += 1
-                results.append({"EMP_ID": emp_id, "Status": "Failed", "Reason": "PDF not found"})
+                results.append({"EMP_ID": emp_id, "Status": "Failed", "Phone": phone, "Reason": "PDF file not found on server"})
                 continue
 
             with open(pdf_path, "rb") as f:
@@ -821,7 +882,7 @@ def send_whatsapp():
 
             pdf_filename = f"Payslip_{month}_{emp_name.replace(' ', '_')}.pdf"
 
-            success = send_payslip_whatsapp(
+            success, reason = send_payslip_whatsapp(
                 phone_number=str(phone),
                 emp_name=emp_name,
                 month=month,
@@ -834,7 +895,7 @@ def send_whatsapp():
                 results.append({"EMP_ID": emp_id, "Status": "Sent", "Phone": phone})
             else:
                 failed_count += 1
-                results.append({"EMP_ID": emp_id, "Status": "Failed", "Phone": phone})
+                results.append({"EMP_ID": emp_id, "Status": "Failed", "Phone": phone, "Reason": reason})
 
         return jsonify({
             "message": f"WhatsApp sent: {sent_count}, failed: {failed_count}",
@@ -844,8 +905,7 @@ def send_whatsapp():
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500    
-app.secret_key = os.getenv("SECRET_KEY", "change-this-secret")
+        return jsonify({"error": str(e)}), 500
 
 ADMIN_USER = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASSWORD", "rsmantech123")
@@ -865,7 +925,6 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# Add this decorator to protect your dashboard route
 @app.route("/")
 def dashboard():
     if not session.get("logged_in"):

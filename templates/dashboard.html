@@ -690,7 +690,18 @@ function sendWhatsApp() {
             document.getElementById('whatsappBtn').disabled = false;
             return;
         }
-        showStatus('✅ ' + data.message, 'success');
+        let statusType = data.failed_count > 0 ? (data.sent_count > 0 ? 'processing' : 'error') : 'success';
+        let statusMsg = (data.failed_count > 0 && data.sent_count === 0) ? '⚠️ ' : '✅ ';
+        statusMsg += data.message;
+        
+        // If there are failures, gather unique reasons
+        if (data.results && data.failed_count > 0) {
+            const reasons = [...new Set(data.results.filter(r => r.Status === 'Failed' && r.Reason).map(r => r.Reason))];
+            if (reasons.length > 0) {
+                statusMsg += ' (' + reasons.join('; ') + ')';
+            }
+        }
+        showStatus(statusMsg, statusType);
         document.getElementById('statWhatsapp').textContent = data.sent_count || 0;
         if (data.results) updateTableStatus(data.results, 'whatsapp');
         document.getElementById('whatsappBtn').disabled = false;
@@ -708,7 +719,9 @@ function updateTableStatus(results, type) {
             const icon = type === 'whatsapp' ? '✓ WhatsApp' : '✓ Emailed';
             cell.innerHTML = `<span class="status-pill ${cls}">${icon}</span>`;
         } else {
-            cell.innerHTML = `<span class="status-pill pill-failed">✗ Failed</span>`;
+            const reason = result.Reason ? ` title="${result.Reason}"` : '';
+            const reasonText = result.Reason ? ` (${result.Reason})` : '';
+            cell.innerHTML = `<span class="status-pill pill-failed"${reason}>✗ Failed${reasonText}</span>`;
         }
     });
 }

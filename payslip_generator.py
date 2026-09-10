@@ -235,8 +235,23 @@ if __name__ == "__main__":
     col_doj = find_col("DOJ", "DATE OF JOINING")
     col_bank_ac = find_col("BANK_AC", "BANK A/C", "BANK AC", "ACCOUNT", "ACCOUNT NO")
     col_ifsc = find_col("IFSC_CODE", "IFSC CODE", "IFSC")
-    col_phone = find_col("Phone", "phone no", "NAME_CONTACT", "MOBILE", "CONTACT")
-    col_email = find_col("Email", "EMAIL")
+    # Phone fuzzy detection (handles merged headers like 'OT COST_phone no')
+    col_phone = find_col("Phone", "phone no", "NAME_CONTACT", "MOBILE", "CONTACT", "Mobile No", "Phone No", "Contact No")
+    if not col_phone:
+        for c in df.columns:
+            c_low = str(c).strip().lower()
+            if any(term in c_low for term in ['phone', 'mobile', 'contact', 'cell', 'whatsapp']):
+                col_phone = c
+                break
+
+    # Email fuzzy detection (handles merged headers like 'OT COST_EMAIL')
+    col_email = find_col("Email", "EMAIL", "mail", "mail_id", "email_id")
+    if not col_email:
+        for c in df.columns:
+            c_low = str(c).strip().lower()
+            if any(term in c_low for term in ['email', 'e_mail', 'mail_id', 'mail']):
+                col_email = c
+                break
     col_basic_days = find_col("BASIC_DAYS", "Basic Days", "TOTAL DAYS")
     col_actual_days = find_col("ACTUAL_DAYS", "Actual Days", "DAYS WORKED")
 
