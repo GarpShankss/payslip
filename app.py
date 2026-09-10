@@ -354,6 +354,7 @@ def upload_file():
         col_fix_other = find_col("FIXED_OTHER ALLOWANCE", "FIXED_OTHER_ALLOWANCE", "FIXED_OTHER_ALLOW", "FIXED_OTHER ALLOW", "FIXED_OTHERS", "FIXED_OTHER", "OTHER ALLOWANCE", "OTHER_ALLOWANCE", "OTHER ALLOW", "OTHER_ALLOW", "OTHERS", "OTHER", "OTHER_ALLOWANCES", "OTHER ALLOWANCES")
         col_fix_special = find_col("FIXED_SPECIAL ALLOW", "FIXED_SPECIAL ALLOWANCE", "FIXED_SPECIAL_ALLOWANCE", "FIXED_SPECIAL_ALLOW", "FIXED_SPECIAL", "SPECIAL ALLOW", "SPECIAL ALLOWANCE", "SPECIAL_ALLOW", "SPECIAL_ALLOWANCE", "SPECIAL", "SPL_ALLOW", "SPL_ALLOWANCE", "FIXED_SPL_ALLOW", "FIXED_SPL_ALLOWANCE")
         col_fix_tpt = find_col("FIXED_TPT", "FIXED_TPT_ALLOWANCE", "FIXED_TPT ALLOWANCE", "FIXED_TRANSPORT", "FIXED_TRANSPORT ALLOWANCE", "FIXED_TRANSPORT_ALLOWANCE", "FIXED_CONVEYANCE", "FIXED_CONVEYANCE ALLOWANCE", "TPT", "TPT_ALLOWANCE", "TPT ALLOWANCE", "TPT ALLOW", "TRANSPORT", "TRANSPORT ALLOWANCE", "TRANSPORT_ALLOWANCE", "CONVEYANCE", "CONVEYANCE ALLOWANCE", "CONVEYANCE_ALLOWANCE", "TRAVELLING ALLOWANCE", "TRAVEL ALLOWANCE")
+        col_fix_incentive = find_col("FIXED_INCENTIVE", "FIXED INCENTIVE", "FIXED_INCENTIVES", "FIXED INCENTIVES", "FIXED_INCENTIVE_AMOUNT", "FIXED_INCENTIVE_AMT", "FIXED_PERFORMANCE_INCENTIVE", "FIXED PERFORMANCE INCENTIVE", "FIXED_PRODUCTION_INCENTIVE", "FIXED PRODUCTION INCENTIVE", "FIXED_ATTENDANCE_INCENTIVE", "FIXED ATTENDANCE INCENTIVE", "FIXED_MONTHLY_INCENTIVE", "FIXED MONTHLY INCENTIVE", "INCENTIVE", "INCENTIVES", "INCENTIVE_AMOUNT", "INCENTIVE AMOUNT", "INCENTIVE_AMT", "INCENTIVE AMT", "PERFORMANCE INCENTIVE", "PRODUCTION INCENTIVE", "ATTENDANCE INCENTIVE", "MONTHLY INCENTIVE")
         col_fix_bonus = find_col("FIXED_BONUS", "FIXED_STATUORY BONUS", "FIXED_STATUTORY BONUS", "STATUORY BONUS", "STATUTORY BONUS")
         col_fix_total = find_col("FIXED_TOTAL", "FIXED_GROSS", "TOTAL")
 
@@ -374,6 +375,9 @@ def upload_file():
         col_earn_tpt = find_col("EARNED_TPT", "EARNED_TPT_ALLOWANCE", "EARNED_TPT ALLOWANCE", "EARNED_TRANSPORT", "EARNED_TRANSPORT ALLOWANCE", "EARNED_TRANSPORT_ALLOWANCE", "EARNED_CONVEYANCE", "EARNED_CONVEYANCE ALLOWANCE")
         if not col_earn_tpt and col_fix_tpt:
             col_earn_tpt = col_fix_tpt
+        col_earn_incentive = find_col("EARNED_INCENTIVE", "EARNED INCENTIVE", "EARNED_INCENTIVES", "EARNED INCENTIVES", "EARNED_INCENTIVE_AMOUNT", "EARNED_INCENTIVE_AMT", "EARNED_PERFORMANCE_INCENTIVE", "EARNED PERFORMANCE INCENTIVE", "EARNED_PRODUCTION_INCENTIVE", "EARNED PRODUCTION INCENTIVE", "EARNED_ATTENDANCE_INCENTIVE", "EARNED ATTENDANCE INCENTIVE", "EARNED_MONTHLY_INCENTIVE", "EARNED MONTHLY INCENTIVE")
+        if not col_earn_incentive and col_fix_incentive:
+            col_earn_incentive = col_fix_incentive
         col_earn_bonus = find_col("EARNED_BONUS", "EARNED_STATUORY BONUS", "EARNED_STATUTORY BONUS")
         col_earn_total = find_col("EARNED_TOTAL", "EARNED_GROSS")
 
@@ -391,7 +395,7 @@ def upload_file():
         # Employer Contribution columns
         col_er_pf = find_col("EMPLOYER CONTRIBUTION_PF  13%", "EMPLOYER CONTRIBUTION_PF 13%", "EMPLOYER CONTRIBUTION_PF", "EMPLOYER_PF", "ER_PF")
         col_er_esi = find_col("EMPLOYER CONTRIBUTION_ESI  3.25%", "EMPLOYER CONTRIBUTION_ESI 3.25%", "EMPLOYER CONTRIBUTION_ESI", "EMPLOYER_ESI", "ER_ESI")
-        col_er_lww = find_col("EMPLOYER CONTRIBUTION_LWW", "EMPLOYER CONTRIBUTION_LEAVE WAGES", "EMPLOYER CONTRIBUTION_LEAVE WITH WAGES", "EMPLOYER_LWW", "EMPLOYER_LEAVE_WAGES", "EMPLOYER_LEAVE_WITH_WAGES", "ER_LWW", "ER_LEAVE_WAGES")
+        col_er_lww = find_col("EMPLOYER CONTRIBUTION_LWW", "EMPLOYER CONTRIBUTION_LEAVE COMPLIANCE", "EMPLOYER CONTRIBUTION_LEAVE WAGES", "EMPLOYER CONTRIBUTION_LEAVE WITH WAGES", "EMPLOYER_LWW", "EMPLOYER_LEAVE_WAGES", "EMPLOYER_LEAVE_WITH_WAGES", "ER_LWW", "ER_LEAVE_WAGES")
         col_er_statu_bonus = find_col("EMPLOYER CONTRIBUTION_STATU BONUS", "EMPLOYER CONTRIBUTION_STATUTORY BONUS", "EMPLOYER_STATU_BONUS", "EMPLOYER_STATUTORY_BONUS", "ER_STATU_BONUS", "STATU BONUS")
         col_er_total = find_col("EMPLOYER CONTRIBUTION_TOTAL", "EMPLOYER_TOTAL", "ER_TOTAL")
 
@@ -411,6 +415,7 @@ def upload_file():
         print(f"  Earned other allowance col: {col_earn_other}")
         print(f"  Earned special allowance col: {col_earn_special}")
         print(f"  Earned TPT/Transport allowance col: {col_earn_tpt}")
+        print(f"  Earned incentive col: {col_earn_incentive}")
         print(f"  Employer LWW col: {col_er_lww}")
         print(f"  Employer STATU BONUS col: {col_er_statu_bonus}")
         
@@ -474,6 +479,7 @@ def upload_file():
                     "others": get_numeric_value(row.get(col_fix_other)) if col_fix_other else 0,
                     "special_allowance": get_numeric_value(row.get(col_fix_special)) if col_fix_special else 0,
                     "tpt": get_numeric_value(row.get(col_fix_tpt)) if col_fix_tpt else 0,
+                    "incentive": get_numeric_value(row.get(col_fix_incentive)) if col_fix_incentive else 0,
                     "bonus": get_numeric_value(row.get(col_fix_bonus)) if col_fix_bonus else 0,
                     "total": get_numeric_value(row.get(col_fix_total)) if col_fix_total else 0,
                 }
@@ -486,6 +492,7 @@ def upload_file():
                     "others": get_numeric_value(row.get(col_earn_other)) if col_earn_other else 0,
                     "special_allowance": get_numeric_value(row.get(col_earn_special)) if col_earn_special else 0,
                     "tpt": get_numeric_value(row.get(col_earn_tpt)) if col_earn_tpt else 0,
+                    "incentive": get_numeric_value(row.get(col_earn_incentive)) if col_earn_incentive else 0,
                     "bonus": get_numeric_value(row.get(col_earn_bonus)) if col_earn_bonus else 0,
                     "total": get_numeric_value(row.get(col_earn_total)) if col_earn_total else 0,
                 }
@@ -494,12 +501,14 @@ def upload_file():
                 if salary_fixed["total"] == 0:
                     salary_fixed["total"] = (salary_fixed["basic"] + salary_fixed["da"] + salary_fixed["hra"] +
                                             salary_fixed["leave_wages"] + salary_fixed["others"] +
-                                            salary_fixed["special_allowance"] + salary_fixed["tpt"] + salary_fixed["bonus"])
+                                            salary_fixed["special_allowance"] + salary_fixed["tpt"] +
+                                            salary_fixed["incentive"] + salary_fixed["bonus"])
 
                 if salary_earned["total"] == 0:
                     salary_earned["total"] = (salary_earned["basic"] + salary_earned["da"] + salary_earned["hra"] +
                                              salary_earned["leave_wages"] + salary_earned["others"] +
-                                             salary_earned["special_allowance"] + salary_earned["tpt"] + salary_earned["bonus"])
+                                             salary_earned["special_allowance"] + salary_earned["tpt"] +
+                                             salary_earned["incentive"] + salary_earned["bonus"])
 
                 deduction = {
                     "pf": get_numeric_value(row.get(col_ded_pf)) if col_ded_pf else 0,
@@ -532,6 +541,8 @@ def upload_file():
                     earnings_items.append({"name": "Special Allowance", "fixed": salary_fixed["special_allowance"], "earned": salary_earned["special_allowance"]})
                 if (col_fix_tpt or col_earn_tpt or salary_fixed["tpt"] > 0 or salary_earned["tpt"] > 0) and (col_fix_tpt != col_fix_other and col_earn_tpt != col_earn_other):
                     earnings_items.append({"name": "Transport Allowance", "fixed": salary_fixed["tpt"], "earned": salary_earned["tpt"]})
+                if (col_fix_incentive or col_earn_incentive or salary_fixed["incentive"] > 0 or salary_earned["incentive"] > 0) and (col_fix_incentive != col_fix_other and col_earn_incentive != col_earn_other):
+                    earnings_items.append({"name": "Incentive", "fixed": salary_fixed["incentive"], "earned": salary_earned["incentive"]})
                 if col_fix_bonus or col_earn_bonus or salary_fixed["bonus"] > 0 or salary_earned["bonus"] > 0:
                     earnings_items.append({"name": "Bonus", "fixed": salary_fixed["bonus"], "earned": salary_earned["bonus"]})
 
