@@ -3,3 +3,5 @@ nginx/certbot/
 __pycache__/
 *.log
 payslips/
+test_data/
+bin/

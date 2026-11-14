@@ -583,16 +583,14 @@ let currentMonth = '';
 
 function displayLocationCounts(counts, isError) {
     const summaryBox = document.getElementById('locationSummary');
-    if (!summaryBox || !counts) return;
+    const countsEl = document.getElementById('locationCountsText');
+    if (!summaryBox || !countsEl || !counts) return;
     summaryBox.style.display = 'block';
     summaryBox.style.borderLeftColor = isError ? 'var(--orange)' : 'var(--sage)';
-    document.getElementById('cntBangalore').textContent = counts.Bangalore || 0;
-    document.getElementById('cntHyderabad').textContent = counts.Hyderabad || 0;
-    document.getElementById('cntTotal').textContent = counts.Total || 0;
-    document.getElementById('locationCountsText').innerHTML =
-        `<span>Bangalore: <strong>${counts.Bangalore || 0}</strong> employees</span>` +
-        `<span>Hyderabad: <strong>${counts.Hyderabad || 0}</strong> employees</span>` +
-        `<span>Total: <strong>${counts.Total || 0}</strong> employees</span>`;
+    countsEl.innerHTML =
+        `<span>Bangalore: <strong id="cntBangalore">${counts.Bangalore || 0}</strong> employees</span>` +
+        `<span>Hyderabad: <strong id="cntHyderabad">${counts.Hyderabad || 0}</strong> employees</span>` +
+        `<span>Total: <strong id="cntTotal">${counts.Total || 0}</strong> employees</span>`;
 }
 
 function handleFileSelect(e) {
@@ -680,12 +678,16 @@ function uploadCSV() {
             let msg = data.message || 'Payslips generated successfully';
             if (data.warning) msg += '\n\n⚠️ ' + data.warning;
             showStatus(msg, data.warning ? 'processing' : 'success');
-            document.getElementById('downloadCurrentBtn').disabled = false;
+            const dlBtn = document.getElementById('downloadCurrentBtn');
+            if (dlBtn) dlBtn.disabled = false;
             const preview = Array.isArray(data.preview) ? data.preview : [];
             generatedEmployees = preview;
-            document.getElementById('statTotal').textContent = data.location_counts ? data.location_counts.Total : preview.length;
-            document.getElementById('statGenerated').textContent = preview.length;
-            document.getElementById('statsSection').style.display = 'grid';
+            const statTotalEl = document.getElementById('statTotal');
+            if (statTotalEl) statTotalEl.textContent = data.location_counts ? data.location_counts.Total : preview.length;
+            const statGenEl = document.getElementById('statGenerated');
+            if (statGenEl) statGenEl.textContent = preview.length;
+            const statsSec = document.getElementById('statsSection');
+            if (statsSec) statsSec.style.display = 'grid';
             if (data.location_counts) {
                 displayLocationCounts(data.location_counts, false);
             }
@@ -732,7 +734,8 @@ function sendEmails() {
     .then(data => {
         if (data.error) { showStatus(data.error, 'error'); document.getElementById('emailBtn').disabled = false; return; }
         showStatus(data.message, 'success');
-        document.getElementById('statEmails').textContent = data.sent_count || 0;
+        const statEmailEl = document.getElementById('statEmails');
+        if (statEmailEl) statEmailEl.textContent = data.sent_count || 0;
         if (data.results) updateTableStatus(data.results, 'email');
         document.getElementById('emailBtn').disabled = false;
     })
@@ -771,7 +774,8 @@ function sendWhatsApp() {
             }
         }
         showStatus(statusMsg, statusType);
-        document.getElementById('statWhatsapp').textContent = data.sent_count || 0;
+        const statWaEl = document.getElementById('statWhatsapp');
+        if (statWaEl) statWaEl.textContent = data.sent_count || 0;
         if (data.results) updateTableStatus(data.results, 'whatsapp');
         document.getElementById('whatsappBtn').disabled = false;
     })

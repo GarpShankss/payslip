@@ -21,7 +21,10 @@ LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-if os.path.exists('/usr/local/bin/wkhtmltopdf'):
+local_wkhtml = os.path.join(BASE_DIR, "bin", "wkhtmltopdf")
+if os.path.exists(local_wkhtml) and os.access(local_wkhtml, os.X_OK):
+    WKHTMLTOPDF_CMD = local_wkhtml
+elif os.path.exists('/usr/local/bin/wkhtmltopdf'):
     WKHTMLTOPDF_CMD = '/usr/local/bin/wkhtmltopdf'
 elif os.path.exists('/usr/bin/wkhtmltopdf'):
     WKHTMLTOPDF_CMD = '/usr/bin/wkhtmltopdf'
@@ -218,37 +221,47 @@ if __name__ == "__main__":
         except UnicodeDecodeError:
             df = pd.read_csv(file_path, engine="python", encoding="latin1")
     elif ext in [".xlsx", ".xls"]:
+        raw = pd.read_excel(file_path, header=None)
         header_row = None
-        for row_num in range(10):
-            try:
-                test_df = pd.read_excel(file_path, header=row_num, nrows=1)
-                cols_lower = [str(c).lower() for c in test_df.columns]
-                if any('emp' in c or 'name' in c or 'id' in c or 'sl.no' in c or 'sl no' in c for c in cols_lower if not c.startswith('unnamed')):
-                    header_row = row_num
-                    break
-            except:
-                continue
+        for r in range(min(15, len(raw))):
+            row_vals = [str(v).lower().strip() for v in raw.iloc[r] if pd.notna(v)]
+            if any('emp' in c or 'name' in c or 'id' in c or 'sl.no' in c or 'sl no' in c for c in row_vals if not c.startswith('unnamed')):
+                header_row = r
+                break
 
         if header_row is not None:
-            try:
-                next_row_df = pd.read_excel(file_path, header=header_row+1, nrows=1)
-                next_cols = [str(c).lower() for c in next_row_df.columns]
-                if any('fixed' in c or 'earned' in c or 'deduction' in c or 'basic' in c or 'uan' in c for c in next_cols if not c.startswith('unnamed')):
-                    df = pd.read_excel(file_path, header=[header_row, header_row+1])
-                    new_cols = []
-                    for col in df.columns:
-                        parts = [str(c).strip() for c in col if not str(c).startswith('Unnamed')]
-                        if len(parts) == 2 and parts[0].upper() == parts[1].split('_')[0].upper():
-                            new_cols.append(parts[1])
+            is_multi = False
+            if header_row + 1 < len(raw):
+                next_vals = [str(v).lower().strip() for v in raw.iloc[header_row + 1] if pd.notna(v)]
+                if any('fixed' in c or 'earned' in c or 'deduction' in c or 'basic' in c or 'uan' in c for c in next_vals if not c.startswith('unnamed')):
+                    is_multi = True
+
+            if is_multi:
+                h1 = raw.iloc[header_row]
+                h2 = raw.iloc[header_row + 1]
+                new_cols = []
+                for c1, c2 in zip(h1, h2):
+                    s1 = str(c1).strip() if pd.notna(c1) and not str(c1).startswith('Unnamed') else ''
+                    s2 = str(c2).strip() if pd.notna(c2) and not str(c2).startswith('Unnamed') else ''
+                    if s1 and s2:
+                        if s1.upper() == s2.split('_')[0].upper():
+                            new_cols.append(s2)
                         else:
-                            new_cols.append('_'.join(parts).strip('_'))
-                    df.columns = new_cols
-                else:
-                    df = pd.read_excel(file_path, header=header_row)
-            except:
-                df = pd.read_excel(file_path, header=header_row)
+                            new_cols.append(f'{s1}_{s2}')
+                    elif s1:
+                        new_cols.append(s1)
+                    elif s2:
+                        new_cols.append(s2)
+                    else:
+                        new_cols.append('Unnamed')
+                df = raw.iloc[header_row + 2:].copy()
+                df.columns = new_cols
+            else:
+                h1 = [str(c).strip() if pd.notna(c) and not str(c).startswith('Unnamed') else 'Unnamed' for c in raw.iloc[header_row]]
+                df = raw.iloc[header_row + 1:].copy()
+                df.columns = h1
         else:
-            df = pd.read_excel(file_path)
+            df = raw
     else:
         print("Unsupported file format")
         sys.exit(1)
