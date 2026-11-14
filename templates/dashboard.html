@@ -195,7 +195,7 @@
 
         .upload-row {
             display: grid;
-            grid-template-columns: 1fr 180px 120px;
+            grid-template-columns: 1fr 160px 140px 110px;
             gap: 14px;
             margin-bottom: 18px;
         }
@@ -489,6 +489,11 @@
                     <small>.csv, .xlsx, .xls supported</small>
                 </div>
             </label>
+            <select id="location">
+                <option value="ALL" selected>All Locations</option>
+                <option value="BANGALORE">Bangalore</option>
+                <option value="HYDERABAD">Hyderabad</option>
+            </select>
             <select id="month">
                 <option>January</option><option>February</option><option>March</option>
                 <option>April</option><option>May</option><option>June</option>
@@ -499,6 +504,18 @@
                 <option>2024</option><option>2025</option>
                 <option selected>2026</option><option>2027</option>
             </select>
+        </div>
+
+        <!-- Location Employee Counts -->
+        <div id="locationSummary" style="display:none; margin-bottom:18px; padding:12px 18px; background:rgba(17,34,78,0.04); border-radius:12px; border-left:4px solid var(--orange);">
+            <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--navy); margin-bottom:6px;">
+                📍 Location Breakdown
+            </div>
+            <div id="locationCountsText" style="font-size:13px; color:var(--navy); font-weight:500; display:flex; gap:20px; flex-wrap:wrap;">
+                <span>Bangalore: <strong id="cntBangalore">0</strong> employees</span>
+                <span>Hyderabad: <strong id="cntHyderabad">0</strong> employees</span>
+                <span>Total: <strong id="cntTotal">0</strong> employees</span>
+            </div>
         </div>
 
         <div class="button-grid">
@@ -547,6 +564,7 @@
                         <th>EMP ID</th>
                         <th>Name</th>
                         <th>Designation</th>
+                        <th>Location</th>
                         <th>Email</th>
                         <th>Net Pay</th>
                         <th>Status</th>
@@ -563,11 +581,51 @@ let selectedFile = null;
 let generatedEmployees = [];
 let currentMonth = '';
 
+function displayLocationCounts(counts, isError) {
+    const summaryBox = document.getElementById('locationSummary');
+    if (!summaryBox || !counts) return;
+    summaryBox.style.display = 'block';
+    summaryBox.style.borderLeftColor = isError ? 'var(--orange)' : 'var(--sage)';
+    document.getElementById('cntBangalore').textContent = counts.Bangalore || 0;
+    document.getElementById('cntHyderabad').textContent = counts.Hyderabad || 0;
+    document.getElementById('cntTotal').textContent = counts.Total || 0;
+    document.getElementById('locationCountsText').innerHTML =
+        `<span>Bangalore: <strong>${counts.Bangalore || 0}</strong> employees</span>` +
+        `<span>Hyderabad: <strong>${counts.Hyderabad || 0}</strong> employees</span>` +
+        `<span>Total: <strong>${counts.Total || 0}</strong> employees</span>`;
+}
+
 function handleFileSelect(e) {
     selectedFile = e.target.files[0];
     if (selectedFile) {
         document.getElementById('fileLabel').textContent = '✓ ' + selectedFile.name;
         document.getElementById('fileDrop').classList.add('has-file');
+
+        // Immediately inspect file for location breakdown and validation
+        const formData = new FormData();
+        formData.append('csv_file', selectedFile);
+        fetch('/inspect-file', { method: 'POST', body: formData })
+            .then(async r => {
+                if (r.status === 401) { window.location.href = '/login'; return null; }
+                const data = await r.json();
+                return data;
+            })
+            .then(data => {
+                if (!data) return;
+                const summaryBox = document.getElementById('locationSummary');
+                if (data.error) {
+                    if (summaryBox) {
+                        summaryBox.style.display = 'block';
+                        summaryBox.style.borderLeftColor = 'var(--orange)';
+                        document.getElementById('locationCountsText').innerHTML =
+                            `<span style="color:#c05000;">⚠️ ${data.error.replace(/\n/g, '<br>')}</span>`;
+                    }
+                    showStatus(data.error, 'error');
+                } else if (data.location_counts) {
+                    displayLocationCounts(data.location_counts, false);
+                }
+            })
+            .catch(err => console.log('Inspect error:', err));
     }
 }
 
@@ -590,6 +648,7 @@ function uploadCSV() {
     if (!selectedFile) { showStatus('Please select a file first.', 'error'); return; }
     const formData = new FormData();
     formData.append('csv_file', selectedFile);
+    formData.append('location', document.getElementById('location').value);
     formData.append('month', document.getElementById('month').value);
     formData.append('year', document.getElementById('year').value);
     currentMonth = document.getElementById('month').value;
@@ -611,16 +670,25 @@ function uploadCSV() {
         })
         .then(data => {
             if (!data) return;
-            if (data.error) { showStatus(data.error, 'error'); return; }
+            if (data.error) {
+                showStatus(data.error, 'error');
+                if (data.location_counts) {
+                    displayLocationCounts(data.location_counts, true);
+                }
+                return;
+            }
             let msg = data.message || 'Payslips generated successfully';
             if (data.warning) msg += '\n\n⚠️ ' + data.warning;
             showStatus(msg, data.warning ? 'processing' : 'success');
             document.getElementById('downloadCurrentBtn').disabled = false;
             const preview = Array.isArray(data.preview) ? data.preview : [];
             generatedEmployees = preview;
-            document.getElementById('statTotal').textContent = preview.length;
+            document.getElementById('statTotal').textContent = data.location_counts ? data.location_counts.Total : preview.length;
             document.getElementById('statGenerated').textContent = preview.length;
             document.getElementById('statsSection').style.display = 'grid';
+            if (data.location_counts) {
+                displayLocationCounts(data.location_counts, false);
+            }
             if (preview.length > 0) {
                 document.getElementById('emailBtn').disabled = false;
                 document.getElementById('whatsappBtn').disabled = false;
@@ -634,13 +702,14 @@ function renderTable(preview) {
     const tbody = document.querySelector('#previewTable tbody');
     tbody.innerHTML = '';
     if (!preview.length) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:rgba(17,34,78,0.4);">Payslips generated. Preview unavailable.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:rgba(17,34,78,0.4);">Payslips generated. Preview unavailable.</td></tr>`;
     } else {
         preview.forEach(emp => {
             tbody.innerHTML += `<tr>
                 <td><strong>${emp.EMP_ID || '—'}</strong></td>
                 <td>${emp.Name || '—'}</td>
                 <td style="color:rgba(17,34,78,0.55)">${emp.Designation || '—'}</td>
+                <td><span style="display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;background:rgba(17,34,78,0.06);color:var(--navy);">${emp.Location || '—'}</span></td>
                 <td style="color:rgba(17,34,78,0.55)">${emp.Email || '—'}</td>
                 <td><strong>₹ ${parseFloat(emp.Net_Pay || 0).toLocaleString('en-IN', {minimumFractionDigits:2})}</strong></td>
                 <td><span class="status-pill pill-generated">✓ Generated</span></td>

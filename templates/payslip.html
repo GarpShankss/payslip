@@ -176,8 +176,14 @@
     {% endif %}
     
     <div class="company-name">{{ company.name }}</div>
-    <div class="company-address">{{ company.address }}</div>
-    <div class="company-address">Electronic City, Bangalore - 560100</div>
+    {% if company.address_lines %}
+      {% for line in company.address_lines %}
+      <div class="company-address">{{ line }}</div>
+      {% endfor %}
+    {% else %}
+      <div class="company-address">{{ company.address }}</div>
+      <div class="company-address">Electronic City, Bangalore - 560100</div>
+    {% endif %}
     
     <div class="header-top" style="margin-top: 10px;">
       <div><strong>Contract Labour (Regulation & Abolition)</strong></div>

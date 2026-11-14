@@ -7,6 +7,7 @@ import traceback
 import base64
 import smtplib
 import shutil
+import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
@@ -68,11 +69,15 @@ def cleanup_old_sessions():
     except Exception as e:
         print(f"Cleanup error: {e}")
 
-# Detect wkhtmltopdf path (Docker vs Windows)
+# Detect wkhtmltopdf path (Docker vs Mac vs Windows)
 if os.path.exists('/usr/local/bin/wkhtmltopdf'):
     WKHTMLTOPDF_CMD = '/usr/local/bin/wkhtmltopdf'
 elif os.path.exists('/usr/bin/wkhtmltopdf'):
     WKHTMLTOPDF_CMD = '/usr/bin/wkhtmltopdf'
+elif os.path.exists('/opt/homebrew/bin/wkhtmltopdf'):
+    WKHTMLTOPDF_CMD = '/opt/homebrew/bin/wkhtmltopdf'
+elif shutil.which("wkhtmltopdf"):
+    WKHTMLTOPDF_CMD = shutil.which("wkhtmltopdf")
 else:
     WKHTMLTOPDF_CMD = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
 print(f"Using wkhtmltopdf at: {WKHTMLTOPDF_CMD}")
@@ -82,6 +87,237 @@ COMPANY = {
     "address": "#14, 3rd Cross, Parappana Agrahara",
     "city": "Bengaluru-100"
 }
+
+DEFAULT_LOCATIONS = {
+    "BANGALORE": {
+        "name": "RS MAN-TECH",
+        "address": "#14, 3rd Cross, Parappana Agrahara",
+        "city": "Bengaluru-100",
+        "address_lines": [
+            "#14, 3rd Cross, Parappana Agrahara",
+            "Electronic City, Bangalore - 560100"
+        ]
+    },
+    "HYDERABAD": {
+        "name": "RS MAN-TECH",
+        "address": "No. 2-62, Yellampet Village, Medchal Mandal",
+        "city": "Medchal-Malkajgiri, Telangana - 501401",
+        "address_lines": [
+            "No. 2-62, Yellampet Village,",
+            "Medchal Mandal,",
+            "Medchal-Malkajgiri, Telangana - 501401."
+        ]
+    }
+}
+
+def load_locations_config():
+    cfg_path = os.path.join(BASE_DIR, "config.json")
+    locations = dict(DEFAULT_LOCATIONS)
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if "locations" in cfg and isinstance(cfg["locations"], dict):
+                    for k, v in cfg["locations"].items():
+                        locations[k.upper()] = v
+        except Exception as e:
+            print(f"Warning: could not parse locations from config.json: {e}")
+    return locations
+
+LOCATIONS = load_locations_config()
+
+def get_company_for_location(loc_name: str):
+    clean = str(loc_name).strip().upper() if loc_name else ""
+    if clean in ["BANGALORE", "BENGALURU"]:
+        return LOCATIONS.get("BANGALORE", DEFAULT_LOCATIONS["BANGALORE"])
+    elif clean == "HYDERABAD":
+        return LOCATIONS.get("HYDERABAD", DEFAULT_LOCATIONS["HYDERABAD"])
+    elif clean in LOCATIONS:
+        return LOCATIONS[clean]
+    return LOCATIONS.get("BANGALORE", DEFAULT_LOCATIONS["BANGALORE"])
+
+def normalize_location(raw_val):
+    if pd.isna(raw_val) or raw_val is None:
+        return None
+    val = str(raw_val).strip()
+    if not val or val.lower() in ['nan', 'none', 'null']:
+        return None
+    val_upper = val.upper()
+    if val_upper in ['BANGALORE', 'BENGALURU']:
+        return 'BANGALORE'
+    if val_upper == 'HYDERABAD':
+        return 'HYDERABAD'
+    return 'INVALID'
+
+def validate_locations(df, col_name, col_emp_id, col_location):
+    if not col_location:
+        return {
+            "valid": False,
+            "missing_column": True,
+            "error": "❌ Cannot generate payslips: 'Location' column missing from uploaded file. Please add a 'Location' column with 'BANGALORE' or 'HYDERABAD'.",
+            "valid_rows": [],
+            "errors": [],
+            "counts": {"BANGALORE": 0, "HYDERABAD": 0, "TOTAL": 0}
+        }
+
+    valid_rows = []
+    location_errors = []
+    location_counts = {"BANGALORE": 0, "HYDERABAD": 0}
+
+    for index, row in df.iterrows():
+        name_val = row.get(col_name) if col_name else ""
+        if pd.isna(name_val) or str(name_val).strip() == "" or str(name_val).strip().lower() in ['total', 'totals', 'grand total']:
+            continue
+
+        emp_id_val = row.get(col_emp_id) if col_emp_id else f"EMP{index+1}"
+        emp_id = str(int(float(emp_id_val))) if str(emp_id_val).replace('.0','').isdigit() else str(emp_id_val).strip()
+        emp_name = str(name_val).strip()
+
+        raw_loc = row.get(col_location)
+        norm_loc = normalize_location(raw_loc)
+
+        if norm_loc is None:
+            location_errors.append({
+                "row": index + 2,
+                "emp_id": emp_id,
+                "name": emp_name,
+                "reason": "Location is missing"
+            })
+        elif norm_loc == 'INVALID':
+            location_errors.append({
+                "row": index + 2,
+                "emp_id": emp_id,
+                "name": emp_name,
+                "reason": f"Invalid location '{str(raw_loc).strip()}' (must be BANGALORE or HYDERABAD)"
+            })
+        else:
+            location_counts[norm_loc] = location_counts.get(norm_loc, 0) + 1
+            valid_rows.append({
+                "index": index,
+                "row": row,
+                "emp_id": emp_id,
+                "emp_name": emp_name,
+                "location": norm_loc
+            })
+
+    total_valid = len(valid_rows)
+    total_errors = len(location_errors)
+    counts = {
+        "BANGALORE": location_counts.get("BANGALORE", 0),
+        "HYDERABAD": location_counts.get("HYDERABAD", 0),
+        "TOTAL": total_valid
+    }
+
+    if location_errors:
+        err_lines = [
+            f"• Row {e['row']} | Emp ID: {e['emp_id']} | {e['name']}: {e['reason']}"
+            for e in location_errors[:15]
+        ]
+        if len(location_errors) > 15:
+            err_lines.append(f"... and {len(location_errors) - 15} more")
+
+        err_msg = (
+            f"❌ Location Validation Failed:\n"
+            f"• Valid employees: {total_valid}\n"
+            f"• Employees with errors: {total_errors}\n\n"
+            f"Errors found:\n" + "\n".join(err_lines)
+        )
+        return {
+            "valid": False,
+            "missing_column": False,
+            "error": err_msg,
+            "valid_rows": valid_rows,
+            "errors": location_errors,
+            "counts": counts
+        }
+
+    return {
+        "valid": True,
+        "missing_column": False,
+        "error": None,
+        "valid_rows": valid_rows,
+        "errors": [],
+        "counts": counts
+    }
+
+def read_and_merge_excel(file_path):
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".csv":
+        try:
+            df = pd.read_csv(file_path, encoding="utf-8", engine="python")
+        except UnicodeDecodeError:
+            df = pd.read_csv(file_path, encoding="latin1", engine="python")
+    elif ext in [".xlsx", ".xls"]:
+        header_row = None
+        for row_num in range(10):
+            try:
+                test_df = pd.read_excel(file_path, header=row_num, nrows=1)
+                cols_lower = [str(c).lower() for c in test_df.columns]
+                if any('emp' in c or 'name' in c or 'id' in c or 'sl.no' in c or 'sl no' in c for c in cols_lower if not c.startswith('unnamed')):
+                    header_row = row_num
+                    break
+            except:
+                continue
+
+        if header_row is not None:
+            try:
+                next_row_df = pd.read_excel(file_path, header=header_row+1, nrows=1)
+                next_cols = [str(c).lower() for c in next_row_df.columns]
+                if any('fixed' in c or 'earned' in c or 'deduction' in c or 'basic' in c or 'uan' in c for c in next_cols if not c.startswith('unnamed')):
+                    df = pd.read_excel(file_path, header=[header_row, header_row+1])
+                    new_cols = []
+                    for col in df.columns:
+                        parts = [str(c).strip() for c in col if not str(c).startswith('Unnamed')]
+                        if len(parts) == 2 and parts[0].upper() == parts[1].split('_')[0].upper():
+                            new_cols.append(parts[1])
+                        else:
+                            new_cols.append('_'.join(parts).strip('_'))
+                    df.columns = new_cols
+                else:
+                    df = pd.read_excel(file_path, header=header_row)
+            except:
+                df = pd.read_excel(file_path, header=header_row)
+        else:
+            df = pd.read_excel(file_path)
+    else:
+        raise ValueError("Unsupported file type")
+
+    df.columns = df.columns.str.strip().str.replace('\ufeff', '')
+    df = df.dropna(how='all')
+
+    col_map = {}
+    for col in df.columns:
+        c_str = str(col).strip()
+        col_map[c_str] = col
+        col_map[c_str.lower()] = col
+        col_lower_slug = c_str.lower().replace(' ', '_')
+        col_map[col_lower_slug] = col
+        norm_slug = re.sub(r'[^a-z0-9]+', '_', c_str.lower()).strip('_')
+        if norm_slug:
+            col_map[norm_slug] = col
+
+        if 'deductions_' in col_lower_slug or 'deduction_' in col_lower_slug:
+            cleaned = col_lower_slug.replace('deductions_', '').replace('deduction_', '')
+            col_map[cleaned] = col
+        if 'net_pay_' in col_lower_slug:
+            col_map[col_lower_slug.replace('net_pay_', '')] = col
+
+    def find_col(*candidates):
+        for c in candidates:
+            c_str = str(c).strip()
+            if c_str in col_map:
+                return col_map[c_str]
+            if c_str.lower() in col_map:
+                return col_map[c_str.lower()]
+            c_slug = c_str.lower().replace(' ', '_')
+            if c_slug in col_map:
+                return col_map[c_slug]
+            norm_slug = re.sub(r'[^a-z0-9]+', '_', c_str.lower()).strip('_')
+            if norm_slug in col_map:
+                return col_map[norm_slug]
+        return None
+
+    return df, col_map, find_col
 
 EMAIL_CONFIG = {
     "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
@@ -276,6 +512,7 @@ def process_single_employee_pdf(task_data):
             "EMP_ID": emp_id,
             "Name": emp_data["name"],
             "Designation": emp_data["designation"],
+            "Location": emp_data.get("location", ""),
             "Email": emp_data["email"],
             "Phone": emp_data["phone"],
             "Net_Pay": net_pay,
@@ -289,6 +526,68 @@ def process_single_employee_pdf(task_data):
     except Exception as e:
         print(f"ERROR: Exception processing {emp_id}: {e}")
         return {"success": False, "emp_id": emp_id, "error": str(e)}
+
+@app.route("/inspect-file", methods=["POST"])
+def inspect_file():
+    if not session.get("logged_in"):
+        return jsonify({"error": "Session expired. Please log in again."}), 401
+
+    if "csv_file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files["csv_file"]
+    filename = secure_filename(file.filename)
+    if not filename:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    file_path = os.path.join(UPLOAD_DIR, f"inspect_{filename}")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    print(f"[inspect-file] Saving to: {file_path}")
+    file.save(file_path)
+    print(f"[inspect-file] File saved, exists: {os.path.exists(file_path)}")
+
+    try:
+        df, col_map, find_col = read_and_merge_excel(file_path)
+        col_emp_id = find_col("EMP_ID", "EMP ID", "EMPLOYEE ID", "EMP CODE", "ID", "Sl.No", "Sl No")
+        col_name = find_col("NAME", "EMPLOYEE NAME", "EMP NAME")
+        col_location = find_col("LOCATION", "Location", "location")
+        if not col_location:
+            for c in df.columns:
+                if str(c).strip().lower() == "location":
+                    col_location = c
+                    break
+
+        validation = validate_locations(df, col_name, col_emp_id, col_location)
+        if not validation["valid"]:
+            return jsonify({
+                "success": False,
+                "error": validation["error"],
+                "valid_count": len(validation["valid_rows"]),
+                "error_count": len(validation["errors"]),
+                "errors": validation["errors"],
+                "location_counts": {
+                    "Bangalore": validation["counts"]["BANGALORE"],
+                    "Hyderabad": validation["counts"]["HYDERABAD"],
+                    "Total": validation["counts"]["TOTAL"]
+                }
+            }), 400
+
+        return jsonify({
+            "success": True,
+            "location_counts": {
+                "Bangalore": validation["counts"]["BANGALORE"],
+                "Hyderabad": validation["counts"]["HYDERABAD"],
+                "Total": validation["counts"]["TOTAL"]
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to inspect file: {str(e)}"}), 500
+    finally:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
@@ -311,99 +610,30 @@ def upload_file():
         file = request.files["csv_file"]
         month = request.form.get("month", "NA")
         year = request.form.get("year", str(datetime.now().year))
+        selected_location = request.form.get("location", "ALL").strip().upper()
+        if selected_location in ["ALL LOCATIONS", "ALL_LOCATIONS", ""]:
+            selected_location = "ALL"
+
         filename = secure_filename(file.filename)
         file_path = os.path.join(UPLOAD_DIR, filename)
         file.save(file_path)
 
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext == ".csv":
-            try:
-                df = pd.read_csv(file_path, encoding="utf-8", engine="python")
-            except UnicodeDecodeError:
-                df = pd.read_csv(file_path, encoding="latin1", engine="python")
-        elif ext in [".xlsx", ".xls"]:
-            # Find the correct header row by looking for EMP_ID, NAME, or Sl.No column
-            header_row = None
-            for row_num in range(10):  # Check first 10 rows
-                try:
-                    test_df = pd.read_excel(file_path, header=row_num, nrows=1)
-                    cols_lower = [str(c).lower() for c in test_df.columns]
-                    if any('emp' in c or 'name' in c or 'id' in c or 'sl.no' in c or 'sl no' in c for c in cols_lower if not c.startswith('unnamed')):
-                        header_row = row_num
-                        print(f"Found header row at: {row_num}")
-                        break
-                except:
-                    continue
-            
-            if header_row is not None:
-                try:
-                    next_row_df = pd.read_excel(file_path, header=header_row+1, nrows=1)
-                    next_cols = [str(c).lower() for c in next_row_df.columns]
-                    # If next row has salary columns or subheaders, merge the headers
-                    if any('fixed' in c or 'earned' in c or 'deduction' in c or 'basic' in c or 'uan' in c for c in next_cols if not c.startswith('unnamed')):
-                        print(f"Detected multi-row headers, merging row {header_row} and {header_row+1}")
-                        df = pd.read_excel(file_path, header=[header_row, header_row+1])
-                        new_cols = []
-                        for col in df.columns:
-                            parts = [str(c).strip() for c in col if not str(c).startswith('Unnamed')]
-                            if len(parts) == 2 and parts[0].upper() == parts[1].split('_')[0].upper():
-                                new_cols.append(parts[1])
-                            else:
-                                new_cols.append('_'.join(parts).strip('_'))
-                        df.columns = new_cols
-                    else:
-                        df = pd.read_excel(file_path, header=header_row)
-                except:
-                    df = pd.read_excel(file_path, header=header_row)
-            else:
-                df = pd.read_excel(file_path)
-        else:
-            return jsonify({"error": "Unsupported file type"}), 400
+        df, col_map, find_col = read_and_merge_excel(file_path)
 
-        df.columns = df.columns.str.strip().str.replace('\ufeff', '')
-        df = df.dropna(how='all')
-        
         print(f"\n=== EXCEL COLUMNS DEBUG ===")
         print(f"Total columns in Excel: {len(df.columns)}")
         print(f"All columns: {list(df.columns)}")
         print(f"=== END DEBUG ===\n")
 
-        # Create case-insensitive and normalized column lookup dictionary
-        col_map = {}
-        for col in df.columns:
-            c_str = str(col).strip()
-            col_map[c_str] = col
-            col_map[c_str.lower()] = col
-            col_lower_slug = c_str.lower().replace(' ', '_')
-            col_map[col_lower_slug] = col
-            norm_slug = re.sub(r'[^a-z0-9]+', '_', c_str.lower()).strip('_')
-            if norm_slug:
-                col_map[norm_slug] = col
-            
-            if 'deductions_' in col_lower_slug or 'deduction_' in col_lower_slug:
-                cleaned = col_lower_slug.replace('deductions_', '').replace('deduction_', '')
-                col_map[cleaned] = col
-            if 'net_pay_' in col_lower_slug:
-                col_map[col_lower_slug.replace('net_pay_', '')] = col
-
-        def find_col(*candidates):
-            for c in candidates:
-                c_str = str(c).strip()
-                if c_str in col_map:
-                    return col_map[c_str]
-                if c_str.lower() in col_map:
-                    return col_map[c_str.lower()]
-                c_slug = c_str.lower().replace(' ', '_')
-                if c_slug in col_map:
-                    return col_map[c_slug]
-                norm_slug = re.sub(r'[^a-z0-9]+', '_', c_str.lower()).strip('_')
-                if norm_slug in col_map:
-                    return col_map[norm_slug]
-            return None
-
         # Detect columns in the uploaded Excel
         col_emp_id = find_col("EMP_ID", "EMP ID", "EMPLOYEE ID", "EMP CODE", "ID", "Sl.No", "Sl No")
         col_name = find_col("NAME", "EMPLOYEE NAME", "EMP NAME")
+        col_location = find_col("LOCATION", "Location", "location")
+        if not col_location:
+            for c in df.columns:
+                if str(c).strip().lower() == "location":
+                    col_location = c
+                    break
         col_designation = find_col("Designation", "DESIG")
         col_unit = find_col("Unit_Name", "UNIT NAME", "Unit", "Unit Name")
         col_uan = find_col("UAN_NO", "UAN NUMBER", "NAME_UAN", "UAN NO", "UAN")
@@ -515,7 +745,43 @@ def upload_file():
         if not (col_net_pay or col_earn_total or col_fix_total):
             return jsonify({"error": "❌ Cannot generate payslips: Net Pay / Total column missing from uploaded file."}), 400
 
-        print(f"Loaded {len(df)} employees from file")
+        # Validate Location column and values
+        validation = validate_locations(df, col_name, col_emp_id, col_location)
+        if not validation["valid"]:
+            return jsonify({
+                "error": validation["error"],
+                "valid_count": len(validation["valid_rows"]),
+                "error_count": len(validation["errors"]),
+                "errors": validation["errors"],
+                "location_counts": {
+                    "Bangalore": validation["counts"]["BANGALORE"],
+                    "Hyderabad": validation["counts"]["HYDERABAD"],
+                    "Total": validation["counts"]["TOTAL"]
+                }
+            }), 400
+
+        loc_counts = validation["counts"]
+        valid_rows = validation["valid_rows"]
+
+        # Filter by selected location
+        if selected_location == "ALL":
+            target_employees = valid_rows
+        elif selected_location in ["BANGALORE", "HYDERABAD"]:
+            target_employees = [item for item in valid_rows if item["location"] == selected_location]
+        else:
+            target_employees = [item for item in valid_rows if item["location"] == selected_location]
+
+        if not target_employees:
+            return jsonify({
+                "error": f"No employees found for location '{selected_location.title()}'. Total employees in file: {loc_counts['TOTAL']} (Bangalore: {loc_counts['BANGALORE']}, Hyderabad: {loc_counts['HYDERABAD']}).",
+                "location_counts": {
+                    "Bangalore": loc_counts["BANGALORE"],
+                    "Hyderabad": loc_counts["HYDERABAD"],
+                    "Total": loc_counts["TOTAL"]
+                }
+            }), 400
+
+        print(f"Loaded {len(df)} total rows from file; {len(valid_rows)} valid employees; {len(target_employees)} targeted for '{selected_location}'")
         print(f"Has OT columns: {has_ot_col} (Hours: {col_ot_hrs}, Cost: {col_ot_cost})")
         print(f"Has Incentive column: {has_incentive_col} (Col: {col_incentive})")
         print(f"Has Phone column: {bool(col_phone)} (Col: {col_phone})")
@@ -528,13 +794,13 @@ def upload_file():
 
         tasks = []
 
-        for index, row in df.iterrows():
-            name_val = row.get(col_name) if col_name else ""
-            if pd.isna(name_val) or str(name_val).strip() == "" or str(name_val).strip().lower() in ['total', 'totals', 'grand total']:
-                continue
-
-            emp_id_val = row.get(col_emp_id) if col_emp_id else f"EMP{index+1}"
-            emp_id = str(int(float(emp_id_val))) if str(emp_id_val).replace('.0','').isdigit() else str(emp_id_val).strip()
+        for item in target_employees:
+            index = item["index"]
+            row = item["row"]
+            name_val = item["emp_name"]
+            emp_id = item["emp_id"]
+            emp_loc = item["location"]
+            emp_company = get_company_for_location(emp_loc)
             
             pay_month = month
 
@@ -691,6 +957,7 @@ def upload_file():
             emp_data = {
                 "emp_id": emp_id,
                 "name": str(name_val).strip(),
+                "location": emp_loc.title(),
                 "designation": str(row.get(col_designation, "")).strip() if col_designation and pd.notna(row.get(col_designation)) else "",
                 "unit_name": str(row.get(col_unit, "")).strip() if col_unit and pd.notna(row.get(col_unit)) else "",
                 "uan": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_uan, "")) if col_uan and pd.notna(row.get(col_uan)) else "",
@@ -705,7 +972,7 @@ def upload_file():
             }
 
             html_content = template.render(
-                company=COMPANY, emp=emp_data, salary_fixed=salary_fixed,
+                company=emp_company, emp=emp_data, salary_fixed=salary_fixed,
                 salary_earned=salary_earned, deduction=deduction,
                 salary_rows=salary_rows,
                 has_employer_contribution=has_employer_contribution,
@@ -756,9 +1023,18 @@ def upload_file():
         if success_count == 0:
             return jsonify({"error": "No payslips could be generated. Check Excel file format."}), 500
 
+        loc_display = selected_location.title() if selected_location != "ALL" else "all locations"
+        msg = f"Generated {success_count} payslip(s) for {loc_display} (Bangalore: {loc_counts['BANGALORE']}, Hyderabad: {loc_counts['HYDERABAD']}, Total: {loc_counts['TOTAL']})"
         return jsonify({
-            "message": f"Generated {success_count} payslip(s)", 
-            "preview": preview
+            "message": msg,
+            "preview": preview,
+            "location_counts": {
+                "Bangalore": loc_counts["BANGALORE"],
+                "Hyderabad": loc_counts["HYDERABAD"],
+                "Total": loc_counts["TOTAL"]
+            },
+            "selected_location": selected_location,
+            "success_count": success_count
         })
 
     except Exception as e:

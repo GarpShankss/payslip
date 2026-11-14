@@ -7,6 +7,7 @@ You can use CAPS, lowercase, mixed case, spaces, or underscores - all will work!
 EMPLOYEE INFORMATION:
 - EMP_ID          (Employee ID / Code)
 - NAME            (Employee Name - Required)
+- LOCATION        (Work Location: BANGALORE or HYDERABAD - Required)
 - DESIGNATION     (Job Title)
 - UNIT_NAME       (Department / Unit Name)
 - UAN_NO          (UAN Number)

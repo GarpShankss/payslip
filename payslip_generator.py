@@ -3,6 +3,7 @@ import sys
 import subprocess
 import base64
 import re
+import json
 import pandas as pd
 from datetime import datetime
 from jinja2 import Environment, FileSystemLoader
@@ -24,6 +25,10 @@ if os.path.exists('/usr/local/bin/wkhtmltopdf'):
     WKHTMLTOPDF_CMD = '/usr/local/bin/wkhtmltopdf'
 elif os.path.exists('/usr/bin/wkhtmltopdf'):
     WKHTMLTOPDF_CMD = '/usr/bin/wkhtmltopdf'
+elif os.path.exists('/opt/homebrew/bin/wkhtmltopdf'):
+    WKHTMLTOPDF_CMD = '/opt/homebrew/bin/wkhtmltopdf'
+elif shutil.which("wkhtmltopdf"):
+    WKHTMLTOPDF_CMD = shutil.which("wkhtmltopdf")
 else:
     WKHTMLTOPDF_CMD = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
 
@@ -40,6 +45,67 @@ COMPANY = {
     "address": "#14, 3rd Cross, Parappana Agrahara",
     "city": "Bengaluru-100"
 }
+
+DEFAULT_LOCATIONS = {
+    "BANGALORE": {
+        "name": "RS MAN-TECH",
+        "address": "#14, 3rd Cross, Parappana Agrahara",
+        "city": "Bengaluru-100",
+        "address_lines": [
+            "#14, 3rd Cross, Parappana Agrahara",
+            "Electronic City, Bangalore - 560100"
+        ]
+    },
+    "HYDERABAD": {
+        "name": "RS MAN-TECH",
+        "address": "No. 2-62, Yellampet Village, Medchal Mandal",
+        "city": "Medchal-Malkajgiri, Telangana - 501401",
+        "address_lines": [
+            "No. 2-62, Yellampet Village,",
+            "Medchal Mandal,",
+            "Medchal-Malkajgiri, Telangana - 501401."
+        ]
+    }
+}
+
+def load_locations_config():
+    cfg_path = os.path.join(BASE_DIR, "config.json")
+    locations = dict(DEFAULT_LOCATIONS)
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if "locations" in cfg and isinstance(cfg["locations"], dict):
+                    for k, v in cfg["locations"].items():
+                        locations[k.upper()] = v
+        except Exception as e:
+            print(f"Warning: could not parse locations from config.json: {e}")
+    return locations
+
+LOCATIONS = load_locations_config()
+
+def get_company_for_location(loc_name: str):
+    clean = str(loc_name).strip().upper() if loc_name else ""
+    if clean in ["BANGALORE", "BENGALURU"]:
+        return LOCATIONS.get("BANGALORE", DEFAULT_LOCATIONS["BANGALORE"])
+    elif clean == "HYDERABAD":
+        return LOCATIONS.get("HYDERABAD", DEFAULT_LOCATIONS["HYDERABAD"])
+    elif clean in LOCATIONS:
+        return LOCATIONS[clean]
+    return LOCATIONS.get("BANGALORE", DEFAULT_LOCATIONS["BANGALORE"])
+
+def normalize_location(raw_val):
+    if pd.isna(raw_val) or raw_val is None:
+        return None
+    val = str(raw_val).strip()
+    if not val or val.lower() in ['nan', 'none', 'null']:
+        return None
+    val_upper = val.upper()
+    if val_upper in ['BANGALORE', 'BENGALURU']:
+        return 'BANGALORE'
+    if val_upper == 'HYDERABAD':
+        return 'HYDERABAD'
+    return 'INVALID'
 
 def get_logo_base64():
     try:
@@ -228,6 +294,12 @@ if __name__ == "__main__":
     # Detect columns
     col_emp_id = find_col("EMP_ID", "EMP ID", "EMPLOYEE ID", "EMP CODE", "ID", "Sl.No", "Sl No")
     col_name = find_col("NAME", "EMPLOYEE NAME", "EMP NAME")
+    col_location = find_col("LOCATION", "Location", "location")
+    if not col_location:
+        for c in df.columns:
+            if str(c).strip().lower() == "location":
+                col_location = c
+                break
     col_designation = find_col("Designation", "DESIG")
     col_unit = find_col("Unit_Name", "UNIT NAME", "Unit", "Unit Name")
     col_uan = find_col("UAN_NO", "UAN NUMBER", "NAME_UAN", "UAN NO", "UAN")
@@ -501,9 +573,15 @@ if __name__ == "__main__":
             "total": er_total_val,
         }
 
+        emp_loc = normalize_location(row.get(col_location)) if col_location else "BANGALORE"
+        if emp_loc == "INVALID" or not emp_loc:
+            emp_loc = "BANGALORE"
+        emp_company = get_company_for_location(emp_loc)
+
         emp_data = {
             "emp_id": emp_id,
             "name": str(name_val).strip(),
+            "location": emp_loc.title(),
             "designation": str(row.get(col_designation, "")).strip() if col_designation and pd.notna(row.get(col_designation)) else "",
             "unit_name": str(row.get(col_unit, "")).strip() if col_unit and pd.notna(row.get(col_unit)) else "",
             "uan": (lambda v: str(int(float(v))) if str(v).strip().replace('.','',1).isdigit() else str(v).strip())(row.get(col_uan, "")) if col_uan and pd.notna(row.get(col_uan)) else "",
@@ -520,7 +598,7 @@ if __name__ == "__main__":
         # RENDER TEMPLATE
         # -----------------------------
         html_content = template.render(
-            company=COMPANY,
+            company=emp_company,
             emp=emp_data,
             salary_fixed=salary_fixed,
             salary_earned=salary_earned,
